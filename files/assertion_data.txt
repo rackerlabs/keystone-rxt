@@ -1,0 +1,6 @@
+RXT_UserName: test
+RXT_Email: test@example.com
+RXT_DomainID: 12345
+RXT_TenantName: 67890
+RXT_TenantID: 67890
+RXT_orgPersonType: identity:default

@@ -1,0 +1,41 @@
+[
+    {
+        "local": [
+            {
+                "user": {
+                    "name": "{0}",
+                    "email": "{1}"
+                },
+                "group": {
+                    "name": "rackspace_cloud_users",
+                    "domain": {
+                        "name": "Default"
+                    }
+                }
+            }
+        ],
+        "remote": [
+            {
+                "type": "RXT_UserName"
+            },
+            {
+                "type": "RXT_Email"
+            },
+            {
+                "type": "RXT_TenantName"
+            },
+            {
+                "type": "RXT_TenantID"
+            },
+            {
+                "type": "RXT_orgPersonType",
+                "any_one_of": [
+                    "object-store:default",
+                    "compute:default",
+                    "identity:tenant-access",
+                    "identity:default"
+                ]
+            }
+        ]
+    }
+]
