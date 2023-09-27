@@ -38,22 +38,6 @@ openstack mapping create --rules files/mapping.json rackspace_mapping
 ```
 
 ``` shell
-openstack group create rackspace_cloud_users --domain rackspace_cloud_domain
-```
-
-``` shell
-openstack project create rackspace_cloud_project --domain rackspace_cloud_domain
-```
-
-``` shell
-openstack role add --group rackspace_cloud_users --project rackspace_cloud_project member
-```
-
-``` shell
-openstack role add --group rackspace_cloud_users --domain rackspace_cloud_domain member
-```
-
-``` shell
 openstack federation protocol create rackspace --mapping rackspace_mapping --identity-provider rackspace
 ```
 
