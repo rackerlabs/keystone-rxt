@@ -7,11 +7,39 @@
                     "email": "{1}"
                 },
                 "group": {
-                    "name": "rackspace_cloud_users",
+                    "name": "{2}",
                     "domain": {
                         "name": "rackspace_cloud_domain"
                     }
                 }
+            },
+            {
+                "projects": [
+                    {
+                        "name": "{2}_Production",
+                        "roles": [
+                            {
+                                "name": "reader"
+                            }
+                        ]
+                    },
+                    {
+                        "name": "{2}_Staging",
+                        "roles": [
+                            {
+                                "name": "member"
+                            }
+                        ]
+                    },
+                    {
+                        "name": "{2}_Development",
+                        "roles": [
+                            {
+                                "name": "admin"
+                            }
+                        ]
+                    }
+                ]
             }
         ],
         "remote": [
@@ -25,15 +53,131 @@
                 "type": "RXT_TenantName"
             },
             {
-                "type": "RXT_TenantID"
+                "type": "RXT_orgPersonType",
+                "any_one_of": [
+                    "identity:tenant-access"
+                ]
+            }
+        ]
+    },
+    {
+        "local": [
+            {
+                "user": {
+                    "name": "{0}",
+                    "email": "{1}"
+                },
+                "group": {
+                    "name": "{2}",
+                    "domain": {
+                        "name": "rackspace_cloud_domain"
+                    }
+                }
+            },
+            {
+                "projects": [
+                    {
+                        "name": "{2}_Production",
+                        "roles": [
+                            {
+                                "name": "admin"
+                            }
+                        ]
+                    },
+                    {
+                        "name": "{2}_Staging",
+                        "roles": [
+                            {
+                                "name": "admin"
+                            }
+                        ]
+                    },
+                    {
+                        "name": "{2}_Development",
+                        "roles": [
+                            {
+                                "name": "admin"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ],
+        "remote": [
+            {
+                "type": "RXT_UserName"
+            },
+            {
+                "type": "RXT_Email"
+            },
+            {
+                "type": "RXT_TenantName"
             },
             {
                 "type": "RXT_orgPersonType",
                 "any_one_of": [
-                    "object-store:default",
-                    "compute:default",
-                    "identity:tenant-access",
-                    "identity:default"
+                    "admin"
+                ]
+            }
+        ]
+    },
+    {
+        "local": [
+            {
+                "user": {
+                    "name": "{0}",
+                    "email": "{1}"
+                },
+                "group": {
+                    "name": "{2}",
+                    "domain": {
+                        "name": "rackspace_cloud_domain"
+                    }
+                }
+            },
+            {
+                "projects": [
+                    {
+                        "name": "{2}_Production",
+                        "roles": [
+                            {
+                                "name": "reader"
+                            }
+                        ]
+                    },
+                    {
+                        "name": "{2}_Staging",
+                        "roles": [
+                            {
+                                "name": "reader"
+                            }
+                        ]
+                    },
+                    {
+                        "name": "{2}_Development",
+                        "roles": [
+                            {
+                                "name": "reader"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ],
+        "remote": [
+            {
+                "type": "RXT_UserName"
+            },
+            {
+                "type": "RXT_Email"
+            },
+            {
+                "type": "RXT_TenantName"
+            },
+            {
+                "type": "RXT_orgPersonType",
+                "any_one_of": [
+                    "billing:admin"
                 ]
             }
         ]
