@@ -9,7 +9,7 @@
                 "group": {
                     "name": "rackspace_cloud_users",
                     "domain": {
-                        "name": "Default"
+                        "name": "rackspace_cloud_domain"
                     }
                 }
             }

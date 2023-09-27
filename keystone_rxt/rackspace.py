@@ -1,4 +1,4 @@
-# Copyright 2013 OpenStack Foundation
+# Copyright 2023 Cloudnull
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -35,7 +35,6 @@ keystone.conf.CONF.set_override("assertion_prefix", "RXT", group="federation")
 class RXT(base.AuthMethodHandler):
     def authenticate(self, auth_payload):
         """Turn a signed request with an access key into a keystone token."""
-        # Check the headers for v1 auth
         auth_payload["identity_provider"] = "rackspace"
         auth_payload["protocol"] = "rackspace"
         return self._v2(auth_payload=auth_payload)
@@ -49,7 +48,7 @@ class RXT(base.AuthMethodHandler):
                 "auth": {
                     "RAX-KSKEY:apiKeyCredentials": {
                         "username": auth_payload["user"]["name"],
-                        "apiKey": auth_payload["user"]["apikey"],
+                        "apiKey": auth_payload["user"]["password"],
                     }
                 }
             }
@@ -89,14 +88,22 @@ class RXT(base.AuthMethodHandler):
                 orgPersonType
             )
 
-        response_data = mapped.handle_unscoped_token(
-            auth_payload,
-            PROVIDERS.resource_api,
-            PROVIDERS.federation_api,
-            PROVIDERS.identity_api,
-            PROVIDERS.assignment_api,
-            PROVIDERS.role_api,
-        )
+        if "id" in auth_payload:
+            token_ref = PROVIDERS.token_provider_api.validate_token(
+                auth_payload["id"]
+            )
+            response_data = mapped.handle_scoped_token(
+                token_ref, PROVIDERS.federation_api, PROVIDERS.identity_api
+            )
+        else:
+            response_data = mapped.handle_unscoped_token(
+                auth_payload,
+                PROVIDERS.resource_api,
+                PROVIDERS.federation_api,
+                PROVIDERS.identity_api,
+                PROVIDERS.assignment_api,
+                PROVIDERS.role_api,
+            )
 
         return base.AuthHandlerResponse(
             status=True, response_body=None, response_data=response_data

@@ -1,0 +1,26 @@
+{
+    "auth": {
+        "identity": {
+            "methods": [
+                "rxt"
+            ],
+            "rxt": {
+                "user": {
+                    "name": "RACKSPACE_USERNAME",
+                    "password": "RACKSPACE_APIKEY",
+                    "domain": {
+                        "name": "rackspace_cloud_domain"
+                    }
+                }
+            }
+        },
+        "scope": {
+            "project": {
+                "name": "rackspace_cloud_project",
+                "domain": {
+                    "name": "rackspace_cloud_domain"
+                }
+            }
+        }
+    }
+}
