@@ -18,7 +18,8 @@ The configuration file entry will look something like this
 
 ``` conf
 [auth]
-methods = rxt,password,token,application_credential
+methods = password,token,application_credential
+password = rxt
 ```
 
 # Identity mapping, project, and domain setup
@@ -52,7 +53,7 @@ The above command will return an unscoped token which will look like so.
 {
     "token": {
         "methods": [
-            "rxt"
+            "password"
         ],
         "user": {
             "domain": {
@@ -131,7 +132,7 @@ Return data looks like so.
 {
     "token": {
         "methods": [
-            "rxt"
+            "password"
         ],
         "user": {
             "domain": {

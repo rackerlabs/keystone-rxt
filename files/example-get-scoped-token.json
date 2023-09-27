@@ -2,9 +2,9 @@
     "auth": {
         "identity": {
             "methods": [
-                "rxt"
+                "password"
             ],
-            "rxt": {
+            "password": {
                 "user": {
                     "name": "RACKSPACE_USERNAME",
                     "password": "RACKSPACE_APIKEY",

@@ -14,8 +14,10 @@
 
 import requests
 
+from oslo_log import log
 import flask
 
+from keystone.auth.plugins import password
 from keystone.auth.plugins import base
 from keystone.auth.plugins import mapped
 from keystone.common import provider_api
@@ -24,6 +26,7 @@ from keystone import exception
 from keystone.i18n import _
 
 
+LOG = log.getLogger(__name__)
 PROVIDERS = provider_api.ProviderAPIs
 RACKPSACE_IDENTITY_V2 = "https://identity.api.rackspacecloud.com/v2.0/tokens"
 
@@ -32,12 +35,20 @@ RACKPSACE_IDENTITY_V2 = "https://identity.api.rackspacecloud.com/v2.0/tokens"
 keystone.conf.CONF.set_override("assertion_prefix", "RXT", group="federation")
 
 
-class RXT(base.AuthMethodHandler):
+class RXT(password.Password):
     def authenticate(self, auth_payload):
         """Turn a signed request with an access key into a keystone token."""
-        auth_payload["identity_provider"] = "rackspace"
-        auth_payload["protocol"] = "rackspace"
-        return self._v2(auth_payload=auth_payload)
+
+        try:
+            assert auth_payload["user"]["domain"]["name"] == "rackspace_cloud_domain"
+        except (KeyError, AssertionError):
+            LOG.debug("Using OS Password Authentication")
+            return super(RXT, self).authenticate(auth_payload)
+        else:
+            LOG.debug("Using Rackspace Global Authentication")
+            auth_payload["identity_provider"] = "rackspace"
+            auth_payload["protocol"] = "rackspace"
+            return self._v2(auth_payload=auth_payload)
 
     def _v1(self, headers):
         raise exception.AuthMethodNotSupported(method="RackspaceV1")
