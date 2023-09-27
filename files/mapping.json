@@ -177,7 +177,7 @@
             {
                 "type": "RXT_orgPersonType",
                 "any_one_of": [
-                    "billing:admin"
+                    "observer"
                 ]
             }
         ]
