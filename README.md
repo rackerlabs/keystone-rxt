@@ -1,18 +1,49 @@
-# Plugin Installation
+# Keystone-RXT Authentication Plugin
 
-Install the plugin, given this is a POC and has no versions, you will need to export the PBR version before installing.
+This repo is a simple authentication plugin for Rackspace Global Auth that will allow an OpenStack environment to use
+Rackspace Global Auth as an IDP.
 
-```shell
-export PBR_VERSION=0
-```
+When the plugin is installed the `password` authentication method is required, and the plugin value needs to be be set
+to `rxt`. Once activated, the plugin will run normally allowing both local users and remote users to authenticate to
+the cloud. The RXT authentication plugin presents a federated token and conforms to the mapping authentication driver.
 
-Now pip install the plugin.
+### Why?
+
+The answer is quite simple, Rackspace Public Cloud Identity provides a powerful set of tools which can allow folks
+to make use of their existing users within an OpenStack environment; additionally, this setup allows us to use
+OpenStack natively.
+
+### How?
+
+To bridge the authentication gap between Keystone and Rackspace Identity the keystone-rxt authentication driver
+effectively acts as a [reverse proxy](https://en.wikipedia.org/wiki/Reverse_proxy) to Rackspace Identity and
+then presents the returned data as a federated token.
+
+![Credit https://github.com/rackerlabs/capstone](files/capstone.png "Capstone reverse proxy image")
+
+### Mapping
+
+Within this repository is an example mapping file `mapping.json` which will create different users based on the roles
+a user has within Rackspace Identity. This file is just an example and can be customized to meet the demands of the
+OpenStack environment following the typical mapping setup. See more about Keystone Mapping and Federation
+[here](https://docs.openstack.org/keystone/latest/admin/federation/mapping_combinations.html).
+
+----
+
+## Deploying the `keystone-rxt` plugin.
+
+Before we can do anything you need to install the plugin within your keystone environment, for development purposes
+the example here is using `pip`.
 
 ``` shell
-pip install --force --upgrade .
+pip install --force --upgrade git+https://github.com/cloudnull/keystone-rxt
 ```
 
-Once the plugin is installed, update your `keystone.conf` to use the new method named `rxt`.
+> This plugin is not yet on PyPi, but that will change with time.
+
+### Setup your environment
+
+Once the authentication plugin is installed, update your `keystone.conf` to use the new password plugin named `rxt`.
 
 The configuration file entry will look something like this
 
@@ -22,428 +53,67 @@ methods = password,token,application_credential
 password = rxt
 ```
 
-# Identity mapping, project, and domain setup
+> Take note that the `password` method is defined and that the password plugin is set to use `rxt`.
 
-After the configuration edit, restart keystone.
+> Yes, effectively one line is all that's required in config. After the configuration edit, restart keystone.
+
+### Identity mapping, project, and domain setup
+
+Once the plugin is setup and running, everything will be operating normally. The plugin is passive until
+the Keystone is informed about the identity provider and we have the `rackspace_cloud_domain` created.
+
+##### Craete the domain
 
 ``` shell
 openstack domain create rackspace_cloud_domain
 ```
 
+##### Create the identity provider
+
 ``` shell
 openstack identity provider create --remote-id rackspace --domain rackspace_cloud_domain rackspace
 ```
+
+##### Create the mapping for our identity provider
 
 ``` shell
 openstack mapping create --rules files/mapping.json rackspace_mapping
 ```
 
+##### Create the federation protocol
+
 ``` shell
 openstack federation protocol create rackspace --mapping rackspace_mapping --identity-provider rackspace
 ```
 
-# Usage
-``` shell
-curl -H "Content-Type: application/json" "@files/example-get-token.json" "http://localhost:5000/v3/auth/tokens" | python3 -m json.tool
-```
+## Using The RXT Authentication Plugin
 
-The above command will return an unscoped token which will look like so.
+Using the plugin is no different that a typical day in the cloud. Simply authenticate using your favorite method,
+just make sure you include the `rackspace_cloud_domain` domain.
 
-```json
-{
-    "token": {
-        "methods": [
-            "password"
-        ],
-        "user": {
-            "domain": {
-                "id": "d73da0bfedcf41da905793a197a7ebe9",
-                "name": "d73da0bfedcf41da905793a197a7ebe9"
-            },
-            "id": "15ec0aab1d4d1c1597797ebb5be769dc0a1c0229a82edc2ee69eedc38f136cff",
-            "name": "keviXXXX",
-            "OS-FEDERATION": {
-                "groups": [
-                    {
-                        "id": "67756f3053c6432fbcfa35f169e4b469"
-                    }
-                ],
-                "identity_provider": {
-                    "id": "rackspace"
-                },
-                "protocol": {
-                    "id": "rackspace"
-                }
-            }
-        },
-        "audit_ids": [
-            "S7m_sfQNQ56q4VWyDqrxpQ"
-        ],
-        "expires_at": "2023-09-27T10:51:51.000000Z",
-        "issued_at": "2023-09-26T22:51:51.000000Z"
-    }
-}
-```
-
-After the initial authentication, the user will be dynamically mapped and can be managed by an admin.
-
-``` shell
-openstack user show keviXXXX
-+---------------------+------------------------------------------------------------------+
-| Field               | Value                                                            |
-+---------------------+------------------------------------------------------------------+
-| domain_id           | d73da0bfedcf41da905793a197a7ebe9                                 |
-| email               | kevin.carter@rackspace.com                                       |
-| enabled             | True                                                             |
-| id                  | xxxxx                                                            |
-| name                | keviXXXX                                                         |
-| options             | {}                                                               |
-| password_expires_at | None                                                             |
-+---------------------+------------------------------------------------------------------+
-```
-
-Furthermore, we can investigate the domain to see that it was dynamically generated by our `rxt` federation
-plugin.
-
-``` shell
-openstack domain show d73da0bfedcf41da905793a197a7ebe9
-+-------------+------------------------------------------------------------------+
-| Field       | Value                                                            |
-+-------------+------------------------------------------------------------------+
-| description | Auto generated federated domain for Identity Provider: rackspace |
-| enabled     | True                                                             |
-| id          | d73da0bfedcf41da905793a197a7ebe9                                 |
-| name        | d73da0bfedcf41da905793a197a7ebe9                                 |
-| options     | {}                                                               |
-| tags        | []                                                               |
-+-------------+------------------------------------------------------------------+
-```
-
-Now that we can see it working, lets put it to work. The following example will return a scoped token along with the
-service catalog for our project.
-
-```shell
-curl -H "Content-Type: application/json" "@files/example-get-scoped-token.json" "http://localhost:5000/v3/auth/tokens" | python3 -m json.tool
-```
-
-Return data looks like so.
-
-``` json
-{
-    "token": {
-        "methods": [
-            "password"
-        ],
-        "user": {
-            "domain": {
-                "id": "d73da0bfedcf41da905793a197a7ebe9",
-                "name": "d73da0bfedcf41da905793a197a7ebe9"
-            },
-            "id": "15ec0aab1d4d1c1597797ebb5be769dc0a1c0229a82edc2ee69eedc38f136cff",
-            "name": "keviXXXX",
-            "OS-FEDERATION": {
-                "groups": [
-                    {
-                        "id": "67756f3053c6432fbcfa35f169e4b469"
-                    }
-                ],
-                "identity_provider": {
-                    "id": "rackspace"
-                },
-                "protocol": {
-                    "id": "rackspace"
-                }
-            }
-        },
-        "audit_ids": [
-            "Pt4PLEMVSLi8gbwIkevHLA"
-        ],
-        "expires_at": "2023-09-27T11:32:45.000000Z",
-        "issued_at": "2023-09-26T23:32:45.000000Z",
-        "project": {
-            "domain": {
-                "id": "default",
-                "name": "Default"
-            },
-            "id": "4a68858d78c14f5488bc19e6fa5052a7",
-            "name": "rackspace_cloud_project"
-        },
-        "is_domain": false,
-        "roles": [
-            {
-                "id": "55ef00e531d645618cef127f54975acd",
-                "name": "reader",
-                "domain_id": null,
-                "description": null,
-                "options": {
-                    "immutable": true
-                }
-            },
-            {
-                "id": "64e930d5c3594471ae09f2f6385fd677",
-                "name": "member",
-                "domain_id": null,
-                "description": null,
-                "options": {
-                    "immutable": true
-                }
-            }
-        ],
-        "catalog": [
-            {
-                "endpoints": [
-                    {
-                        "id": "d5432a739068407aac94ae48b298c3af",
-                        "interface": "public",
-                        "region_id": "RegionOne",
-                        "url": "https://nova.cloud.cloudnull.dev/v2.1",
-                        "region": "RegionOne"
-                    },
-                    {
-                        "id": "e8cc069110f8420092a3f2e02b8356e4",
-                        "interface": "internal",
-                        "region_id": "RegionOne",
-                        "url": "http://172.29.236.100:8774/v2.1",
-                        "region": "RegionOne"
-                    },
-                    {
-                        "id": "fd717dfa461d436fba473ae6386ccc17",
-                        "interface": "admin",
-                        "region_id": "RegionOne",
-                        "url": "http://172.29.236.100:8774/v2.1",
-                        "region": "RegionOne"
-                    }
-                ],
-                "id": "0e243219d5a0446c95c4b219a2f004c0",
-                "type": "compute",
-                "name": "nova"
-            },
-            {
-                "endpoints": [
-                    {
-                        "id": "6e7b9dac014348adb16ee6c73be0a76f",
-                        "interface": "internal",
-                        "region_id": "RegionOne",
-                        "url": "http://172.29.236.100:8000/v1",
-                        "region": "RegionOne"
-                    },
-                    {
-                        "id": "77e4b49198be404c93c4f7ef17ca2344",
-                        "interface": "public",
-                        "region_id": "RegionOne",
-                        "url": "https://heat-cfn.cloud.cloudnull.dev/v1",
-                        "region": "RegionOne"
-                    },
-                    {
-                        "id": "dcaaf9af954840fb8368953d9d04f854",
-                        "interface": "admin",
-                        "region_id": "RegionOne",
-                        "url": "http://172.29.236.100:8000/v1",
-                        "region": "RegionOne"
-                    }
-                ],
-                "id": "303265ef486945f29b41f2315176c112",
-                "type": "cloudformation",
-                "name": "heat-cfn"
-            },
-            {
-                "endpoints": [
-                    {
-                        "id": "028d6e4d206c4905a33351d2f277acc8",
-                        "interface": "admin",
-                        "region_id": "RegionOne",
-                        "url": "http://172.29.236.100:8776/v3/4a68858d78c14f5488bc19e6fa5052a7",
-                        "region": "RegionOne"
-                    },
-                    {
-                        "id": "2db8fa28f6f141f8b792b81f31126ba4",
-                        "interface": "internal",
-                        "region_id": "RegionOne",
-                        "url": "http://172.29.236.100:8776/v3/4a68858d78c14f5488bc19e6fa5052a7",
-                        "region": "RegionOne"
-                    },
-                    {
-                        "id": "f20db50a0ea44b5f9a69942844f1d9b3",
-                        "interface": "public",
-                        "region_id": "RegionOne",
-                        "url": "https://cinder.cloud.cloudnull.dev/v3/4a68858d78c14f5488bc19e6fa5052a7",
-                        "region": "RegionOne"
-                    }
-                ],
-                "id": "334a7d0c20f1499d92bbe5ff2833a687",
-                "type": "volumev3",
-                "name": "cinderv3"
-            },
-            {
-                "endpoints": [
-                    {
-                        "id": "166546cc4f22423c886d1fcea3791ad1",
-                        "interface": "admin",
-                        "region_id": "RegionOne",
-                        "url": "http://172.29.236.100:8004/v1/4a68858d78c14f5488bc19e6fa5052a7",
-                        "region": "RegionOne"
-                    },
-                    {
-                        "id": "4d4bf76b05b244918db12465d850c328",
-                        "interface": "internal",
-                        "region_id": "RegionOne",
-                        "url": "http://172.29.236.100:8004/v1/4a68858d78c14f5488bc19e6fa5052a7",
-                        "region": "RegionOne"
-                    },
-                    {
-                        "id": "86e2f05e46534d3c876f6409fab3ee99",
-                        "interface": "public",
-                        "region_id": "RegionOne",
-                        "url": "https://heat.cloud.cloudnull.dev/v1/4a68858d78c14f5488bc19e6fa5052a7",
-                        "region": "RegionOne"
-                    }
-                ],
-                "id": "51564f19b6a84f958c430457fdb4df1f",
-                "type": "orchestration",
-                "name": "heat"
-            },
-            {
-                "endpoints": [
-                    {
-                        "id": "57eb17f7cfe6468a8ee60bd40a4eaef1",
-                        "interface": "admin",
-                        "region_id": "RegionOne",
-                        "url": "http://172.29.236.100:8780",
-                        "region": "RegionOne"
-                    },
-                    {
-                        "id": "72f5f5c00eb74b84b6df3707b3a7d7dc",
-                        "interface": "internal",
-                        "region_id": "RegionOne",
-                        "url": "http://172.29.236.100:8780",
-                        "region": "RegionOne"
-                    },
-                    {
-                        "id": "e9a2fc29811746949b6ac9c1d93e4176",
-                        "interface": "public",
-                        "region_id": "RegionOne",
-                        "url": "https://placement.cloud.cloudnull.dev",
-                        "region": "RegionOne"
-                    }
-                ],
-                "id": "6071eb68026244108920ba506fc213cc",
-                "type": "placement",
-                "name": "placement"
-            },
-            {
-                "endpoints": [
-                    {
-                        "id": "2b97467c43d84747a5ebe051c30391ef",
-                        "interface": "public",
-                        "region_id": "RegionOne",
-                        "url": "https://glance.cloud.cloudnull.dev",
-                        "region": "RegionOne"
-                    },
-                    {
-                        "id": "3abbe4e7d6de429b9fef2f41ea510452",
-                        "interface": "internal",
-                        "region_id": "RegionOne",
-                        "url": "http://172.29.236.100:9292",
-                        "region": "RegionOne"
-                    },
-                    {
-                        "id": "8166d000e5564c2b9c94cd9a9fa6d943",
-                        "interface": "admin",
-                        "region_id": "RegionOne",
-                        "url": "http://172.29.236.100:9292",
-                        "region": "RegionOne"
-                    }
-                ],
-                "id": "8bb02531e57e4af985361f97dc84663b",
-                "type": "image",
-                "name": "glance"
-            },
-            {
-                "endpoints": [
-                    {
-                        "id": "31135c9f6afa404387398d47b5668bfe",
-                        "interface": "internal",
-                        "region_id": "RegionOne",
-                        "url": "http://172.29.236.100:5000",
-                        "region": "RegionOne"
-                    },
-                    {
-                        "id": "372459170ba24916bef574aa19546afa",
-                        "interface": "public",
-                        "region_id": "RegionOne",
-                        "url": "https://keystone.cloud.cloudnull.dev",
-                        "region": "RegionOne"
-                    },
-                    {
-                        "id": "690b747d3c1549418e52f6ad6afbc3e5",
-                        "interface": "admin",
-                        "region_id": "RegionOne",
-                        "url": "http://172.29.236.100:5000",
-                        "region": "RegionOne"
-                    }
-                ],
-                "id": "b66a493f81034ab8b939d89275e4fd34",
-                "type": "identity",
-                "name": "keystone"
-            },
-            {
-                "endpoints": [
-                    {
-                        "id": "39cdd7830b40490382c3145f71871262",
-                        "interface": "admin",
-                        "region_id": "RegionOne",
-                        "url": "http://172.29.236.100:9696",
-                        "region": "RegionOne"
-                    },
-                    {
-                        "id": "5faa412b92ff435780307aa2973be3e3",
-                        "interface": "public",
-                        "region_id": "RegionOne",
-                        "url": "https://neutron.cloud.cloudnull.dev",
-                        "region": "RegionOne"
-                    },
-                    {
-                        "id": "c628869924434290ac3e914821890c51",
-                        "interface": "internal",
-                        "region_id": "RegionOne",
-                        "url": "http://172.29.236.100:9696",
-                        "region": "RegionOne"
-                    }
-                ],
-                "id": "cfdf5a3f6f64444087d8d8d9c883bac0",
-                "type": "network",
-                "name": "neutron"
-            }
-        ]
-    }
-}
-```
-
-With the service catalog, you can now take the `X-Subject-Token` and use it for anything you need.
-
-``` shell
-curl -H "Accept: application/json" -H "X-Auth-Token: $OS_TOKEN" http://localhost:9292/v2/images
-```
-
-# Setup your `clouds.yaml`
+##### Authentication using `openstacksdk`
 
 This setup requires a federated token to work. The clouds yaml will not pull a token by default.
 
 ``` yaml
 clouds:
-  rxt:
+  local:
     auth:
-      auth_url: http://172.29.236.100:5000/v3
-      project_name: rackspace_cloud_project
+      auth_url: http://localhost:5000/v3
+      project_name: 67890_Development
       project_domain_name: rackspace_cloud_domain
-      token: $FEDERATED_SCOPED_TOKEN
-    auth_type: v3token
+      username: test
+      password: secrete
+      user_domain_name: rackspace_cloud_domain
+    region_name: RegionOne
+    interface: internal
+    identity_api_version: "3"
 ```
 
 Once you have the clouds CLI setup, run commands normally.
 
 ```shell
-openstack --os-cloud rxt image list
+openstack --os-cloud local image list
 +--------------------------------------+-------------------------------------------------+--------+
 | ID                                   | Name                                            | Status |
 +--------------------------------------+-------------------------------------------------+--------+
@@ -455,23 +125,29 @@ openstack --os-cloud rxt image list
 | 804cc228-251c-4081-97df-f609c0e568e7 | ubuntu-jammy-server-cloudimg-amd64-disk-kvm.img | active |
 | da9923a8-ac4b-4036-ac14-46264247eb27 | ubuntu-xenial-server-cloudimg-amd64-disk1.img   | active |
 +--------------------------------------+-------------------------------------------------+--------+
+```
 
-openstack --os-cloud rxt flavor list
-+--------------------------------------+-------------+------+------+-----------+-------+-----------+
-| ID                                   | Name        |  RAM | Disk | Ephemeral | VCPUs | Is Public |
-+--------------------------------------+-------------+------+------+-----------+-------+-----------+
-| 089984c3-bb24-402c-839d-60232fb75510 | k1.tester   | 4096 |   96 |         0 |     6 | True      |
-| 13124993-f785-45f7-b4e5-e3306dfa987c | k0.tester   | 4096 |   32 |         0 |     6 | True      |
-| 2b563d70-7ddc-40a6-9418-61a99647a150 | k2.runner   | 8192 |  172 |         0 |     8 | True      |
-| 32aa44dc-f1ad-4697-a161-dd6a8accf2d4 | k1.tiny     | 1024 |   16 |         0 |     1 | True      |
-| 5894848a-462f-4a53-8240-7a0393ca913b | k1.realtime | 8192 |   48 |        32 |     8 | True      |
-| 692454de-a257-44d8-ad61-a7778abf86c0 | k0.small    | 2048 |   16 |         0 |     2 | True      |
-| 803976a7-fea3-40e9-bd43-f084750f5a2b | k1.runner   | 8192 |   96 |         0 |     8 | True      |
-| 831e8870-bb98-452d-85c5-7dbfe5284e7c | k0.tiny     | 1024 |    8 |         0 |     1 | True      |
-| 8e3c3246-c31c-4ffa-99ac-086cf348ef00 | gpu0.p2000  | 8192 |   32 |         0 |     4 | True      |
-| b5ffae94-1663-44e3-84b6-f749fa100ba4 | gpu1.p2000  | 8192 |   64 |         0 |     4 | True      |
-| cd484020-7da6-4153-90d2-6721dc43ae67 | gpu2.p2000  | 8192 |   72 |        32 |     6 | True      |
-| e29cd119-63e9-49aa-8db9-8ccd29a6c3c1 | k0.medium   | 8192 |   64 |        16 |     8 | True      |
-| fddb41b4-6228-4c90-ae11-d739d4907c43 | k2.tester   | 8192 |   96 |         0 |     6 | True      |
-+--------------------------------------+-------------+------+------+-----------+-------+-----------+
+##### Authentication using `cURL`
+
+You can also use `cURL` to great effect.
+
+> Example POST json files can be found in the files directory.
+
+``` shell
+curl -sS -D - -H "Content-Type: application/json" --data-binary "@get-scoped-token" "http://172.16.27.211:5000/v3/auth/tokens" -o /dev/null
+HTTP/1.1 201 CREATED
+Content-Type: application/json
+Content-Length: 5594
+X-Subject-Token: OS_TOKEN
+Vary: X-Auth-Token
+x-openstack-request-id: req-5a0eb098-eecc-41e1-a10d-d872dc867561
+Connection: close
+```
+
+With the about command we can pull out the value of `X-Subject-Token` and store it as `OS_TOKEN` so that we can authenticate
+to the various APIs supported by our service catalog.
+
+
+``` shell
+curl -H "Accept: application/json" -H "X-Auth-Token: $OS_TOKEN" http://localhost:9292/v2/images
 ```
