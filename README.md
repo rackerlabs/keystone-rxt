@@ -24,8 +24,8 @@ then presents the returned data as a federated token.
 #### History
 
 This plugin was inspired by the [Capstone](https://github.com/rackerlabs/capstone) project. Process wise, Capstone
-and Keystone-RXT perform similar actions and use Rackspace Identity as an IDP compatible with OpenStack. While the
-two projects server different purposes, Keystone-RXT wouldn't exist today had Capstone lead the way.
+and Keystone-RXT perform similar actions using Rackspace Identity as an IDP compatible with OpenStack. While
+Keystone-RXT was inspired by Capstone, the two projects serve different purposes.
 
 ### Mapping
 
