@@ -19,7 +19,13 @@ To bridge the authentication gap between Keystone and Rackspace Identity the key
 effectively acts as a [reverse proxy](https://en.wikipedia.org/wiki/Reverse_proxy) to Rackspace Identity and
 then presents the returned data as a federated token.
 
-![Credit https://github.com/rackerlabs/capstone](files/capstone.png "Capstone reverse proxy image")
+![Capstone Diagram](files/capstone.png "Capstone reverse proxy image https://github.com/rackerlabs/capstone")
+
+#### History
+
+This plugin was inspired by the [Capstone](https://github.com/rackerlabs/capstone) project. Process wise, Capstone
+and Keystone-RXT perform similar actions and use Rackspace Identity as an IDP compatible with OpenStack. While the
+two projects server different purposes, Keystone-RXT wouldn't exist today had Capstone lead the way.
 
 ### Mapping
 
