@@ -5,12 +5,6 @@
                 "user": {
                     "name": "{0}",
                     "email": "{1}"
-                },
-                "group": {
-                    "name": "{2}",
-                    "domain": {
-                        "name": "rackspace_cloud_domain"
-                    }
                 }
             },
             {
@@ -19,7 +13,7 @@
                         "name": "{2}_Production",
                         "roles": [
                             {
-                                "name": "reader"
+                                "name": "member"
                             }
                         ]
                     },
@@ -35,7 +29,7 @@
                         "name": "{2}_Development",
                         "roles": [
                             {
-                                "name": "admin"
+                                "name": "member"
                             }
                         ]
                     }
@@ -55,8 +49,10 @@
             {
                 "type": "RXT_orgPersonType",
                 "any_one_of": [
-                    "identity:tenant-access"
-                ]
+                    ".*admin",
+                    ".*creator"
+                ],
+                "regex": true
             }
         ]
     },
@@ -66,12 +62,6 @@
                 "user": {
                     "name": "{0}",
                     "email": "{1}"
-                },
-                "group": {
-                    "name": "{2}",
-                    "domain": {
-                        "name": "rackspace_cloud_domain"
-                    }
                 }
             },
             {
@@ -80,7 +70,7 @@
                         "name": "{2}_Production",
                         "roles": [
                             {
-                                "name": "admin"
+                                "name": "reader"
                             }
                         ]
                     },
@@ -88,7 +78,7 @@
                         "name": "{2}_Staging",
                         "roles": [
                             {
-                                "name": "admin"
+                                "name": "reader"
                             }
                         ]
                     },
@@ -96,7 +86,7 @@
                         "name": "{2}_Development",
                         "roles": [
                             {
-                                "name": "admin"
+                                "name": "member"
                             }
                         ]
                     }
@@ -116,8 +106,10 @@
             {
                 "type": "RXT_orgPersonType",
                 "any_one_of": [
-                    "admin"
-                ]
+                    ".*tenant-access",
+                    ".*default"
+                ],
+                "regex": true
             }
         ]
     },
@@ -127,12 +119,6 @@
                 "user": {
                     "name": "{0}",
                     "email": "{1}"
-                },
-                "group": {
-                    "name": "{2}",
-                    "domain": {
-                        "name": "rackspace_cloud_domain"
-                    }
                 }
             },
             {
@@ -177,8 +163,9 @@
             {
                 "type": "RXT_orgPersonType",
                 "any_one_of": [
-                    "observer"
-                ]
+                    ".*observer"
+                ],
+                "regex": true
             }
         ]
     }

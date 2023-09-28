@@ -40,7 +40,10 @@ class RXT(password.Password):
         """Turn a signed request with an access key into a keystone token."""
 
         try:
-            assert auth_payload["user"]["domain"]["name"] == "rackspace_cloud_domain"
+            assert (
+                auth_payload["user"]["domain"]["name"]
+                == "rackspace_cloud_domain"
+            )
         except (KeyError, AssertionError):
             LOG.debug("Using OS Password Authentication")
             return super(RXT, self).authenticate(auth_payload)
@@ -50,7 +53,7 @@ class RXT(password.Password):
             auth_payload["protocol"] = "rackspace"
             return self._v2(auth_payload=auth_payload)
 
-    def _v1(self, headers):
+    def _v1(self, auth_payload):
         raise exception.AuthMethodNotSupported(method="RackspaceV1")
 
     def _v2(self, auth_payload):
