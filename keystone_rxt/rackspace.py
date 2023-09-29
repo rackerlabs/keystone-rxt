@@ -34,6 +34,7 @@ RACKPSACE_IDENTITY_V2 = "https://identity.api.rackspacecloud.com/v2.0/tokens"
 
 # The keystone config options used by this module and forced to be RXT
 keystone.conf.CONF.set_override("assertion_prefix", "RXT", group="federation")
+keystone.conf.CONF.set_override("caching", True, group="federation")
 
 
 class RXTv2Credentials(object):
