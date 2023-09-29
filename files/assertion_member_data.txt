@@ -1,0 +1,4 @@
+RXT_UserName: test
+RXT_Email: test@example.com
+RXT_TenantName: 67890
+RXT_orgPersonType: user-manage;tenant-access;creator;default;observer

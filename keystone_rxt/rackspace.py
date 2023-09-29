@@ -178,9 +178,12 @@ class RXT(password.Password):
                 access = return_data["access"]
                 access_user = access["user"]
                 access_token = access["token"]
-                access_user_roles = [
-                    i["name"] for i in return_data["access"]["user"]["roles"]
-                ]
+                access_user_roles = set(
+                    [
+                        i["name"].split(":")[-1]
+                        for i in return_data["access"]["user"]["roles"]
+                    ]
+                )
             except KeyError as e:
                 raise exception.Unauthorized(
                     "Could not parse the Rackspace Service Catalog for access: {error}".format(
@@ -198,9 +201,7 @@ class RXT(password.Password):
         ]
         flask.request.environ["RXT_TenantID"] = access_token["tenant"]["id"]
 
-        orgPersonType = set(
-            "Rackspace:Cloud:User",
-        )
+        orgPersonType = set()
         for role in access_user_roles:
             orgPersonType.add(role)
         else:

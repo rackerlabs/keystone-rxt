@@ -49,10 +49,8 @@
             {
                 "type": "RXT_orgPersonType",
                 "any_one_of": [
-                    ".*admin",
-                    ".*creator"
-                ],
-                "regex": true
+                    "admin"
+                ]
             }
         ]
     },
@@ -78,7 +76,7 @@
                         "name": "{2}_Staging",
                         "roles": [
                             {
-                                "name": "reader"
+                                "name": "member"
                             }
                         ]
                     },
@@ -105,11 +103,9 @@
             },
             {
                 "type": "RXT_orgPersonType",
-                "any_one_of": [
-                    ".*tenant-access",
-                    ".*default"
-                ],
-                "regex": true
+                "not_any_of": [
+                    "admin"
+                ]
             }
         ]
     },
@@ -162,10 +158,10 @@
             },
             {
                 "type": "RXT_orgPersonType",
-                "any_one_of": [
-                    ".*observer"
-                ],
-                "regex": true
+                "not_any_of": [
+                    "admin",
+                    "creator"
+                ]
             }
         ]
     }
