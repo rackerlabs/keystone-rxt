@@ -12,8 +12,9 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-import requests
+import re
 
+import requests
 from oslo_log import log
 import flask
 
@@ -35,6 +36,118 @@ RACKPSACE_IDENTITY_V2 = "https://identity.api.rackspacecloud.com/v2.0/tokens"
 keystone.conf.CONF.set_override("assertion_prefix", "RXT", group="federation")
 
 
+class RXTv2Credentials(object):
+    """Return an autneitcation object based on the provided auth payload.
+
+    Check the value type of the provided auth payload and determine the
+    correct authentication method.
+    """
+
+    hash_types = [r"^[a-fA-F0-9]{%s}$" % i for i in [32, 40, 64]]
+
+    def __init__(self, auth_payload) -> None:
+        self.auth_payload = auth_payload
+
+    @property
+    def _username(self):
+        """This property is used to return the username from the auth payload."""
+
+        try:
+            return self.auth_payload["user"]["name"]
+        except KeyError:
+            try:
+                return self.auth_payload["user"]["username"]
+            except KeyError:
+                raise exception.Unauthorized(
+                    _("The authentication payload is missing the name")
+                )
+
+    @property
+    def _password(self):
+        """This property is used to return the password from the auth payload."""
+
+        try:
+            return self.auth_payload["user"]["password"]
+        except KeyError:
+            raise exception.Unauthorized(
+                _("The authentication payload is missing the password")
+            )
+
+    @property
+    def apiKeyCredentials(self):
+        """Return the API type."""
+
+        return "apiKeyCredentials", {
+            "auth": {
+                "RAX-KSKEY:apiKeyCredentials": {
+                    "username": self._username,
+                    "apiKey": self._password,
+                }
+            }
+        }
+
+    @property
+    def passwordCredentials(self):
+        """Return the Password type."""
+
+        return "passwordCredentials", {
+            "auth": {
+                "passwordCredentials": {
+                    "username": self._username,
+                    "password": self._password,
+                }
+            }
+        }
+
+    def __enter__(self):
+        """Return the correct authentication method.
+
+        This method is used to return the authentication method which is evaluating
+        the password parameter in the auth payload. If the password is a valid
+        `hash_types` then the auth method is first apiKeyCredentials, otherwise the
+        passwordCredentials will be used.
+        """
+
+        rxt_auth_payloads = list()
+
+        for hash_type in self.hash_types:
+            if re.match(hash_type, self._password) is not None:
+                rxt_auth_payloads.insert(0, self.apiKeyCredentials)
+                break
+
+        rxt_auth_payloads.append(self.passwordCredentials)
+
+        for auth_type, auth_data in rxt_auth_payloads:
+            LOG.debug(
+                "Attempting to authenticate using {auth_type}".format(
+                    auth_type=auth_type
+                )
+            )
+            try:
+                r = requests.post(RACKPSACE_IDENTITY_V2, json=auth_data)
+                r.raise_for_status()
+                return r.json()
+            except (
+                requests.HTTPError,
+                requests.ConnectionError,
+                requests.exceptions.JSONDecodeError,
+            ):
+                LOG.warning(
+                    "Failed to authenticate using the Rackspace Identity API with {auth_type}".format(
+                        auth_type=auth_type
+                    )
+                )
+        else:
+            raise exception.Unauthorized(
+                _(
+                    "Could not validate access through the Rackspace Identity API"
+                )
+            )
+
+    def __exit__(self, *args, **kwargs):
+        LOG.debug("Rackspace IDP Login complete, returning to OS")
+
+
 class RXT(password.Password):
     def authenticate(self, auth_payload):
         """Turn a signed request with an access key into a keystone token."""
@@ -53,35 +166,28 @@ class RXT(password.Password):
             auth_payload["protocol"] = "rackspace"
             return self._v2(auth_payload=auth_payload)
 
-    def _v1(self, auth_payload):
-        raise exception.AuthMethodNotSupported(method="RackspaceV1")
+    @staticmethod
+    def _v2(auth_payload):
+        """Authenticate using the Rackspace Identity API.
 
-    def _v2(self, auth_payload):
-        try:
-            auth_data = {
-                "auth": {
-                    "RAX-KSKEY:apiKeyCredentials": {
-                        "username": auth_payload["user"]["name"],
-                        "apiKey": auth_payload["user"]["password"],
-                    }
-                }
-            }
-            r = requests.post(RACKPSACE_IDENTITY_V2, json=auth_data)
-            r.raise_for_status()
-            return_data = r.json()
-        except (
-            requests.HTTPError,
-            requests.ConnectionError,
-            requests.exceptions.JSONDecodeError,
-            KeyError,
-        ):
-            raise exception.Unauthorized(
-                _("Could not validate the access token")
-            )
+        This method is used to authenticate against the Rackspace Identity API.
+        """
 
-        access = return_data["access"]
-        access_user = access["user"]
-        access_token = access["token"]
+        with RXTv2Credentials(auth_payload) as return_data:
+            try:
+                access = return_data["access"]
+                access_user = access["user"]
+                access_token = access["token"]
+                access_user_roles = [
+                    i["name"] for i in return_data["access"]["user"]["roles"]
+                ]
+            except KeyError as e:
+                raise exception.Unauthorized(
+                    "Could not parse the Rackspace Service Catalog for access: {error}".format(
+                        error=e
+                    )
+                )
+
         flask.request.environ["RXT_UserName"] = access_user["name"]
         flask.request.environ["RXT_Email"] = access_user["email"]
         flask.request.environ["RXT_DomainID"] = access_user[
@@ -95,8 +201,8 @@ class RXT(password.Password):
         orgPersonType = set(
             "Rackspace:Cloud:User",
         )
-        for role in return_data["access"]["user"]["roles"]:
-            orgPersonType.add(role["name"])
+        for role in access_user_roles:
+            orgPersonType.add(role)
         else:
             flask.request.environ["RXT_orgPersonType"] = ";".join(
                 orgPersonType
