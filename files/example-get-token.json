@@ -7,7 +7,7 @@
             "password": {
                 "user": {
                     "name": "RACKSPACE_USERNAME",
-                    "password": "RACKSPACE_APIKEY",
+                    "password": "RACKSPACE_CREDENTIALS",
                     "domain": {
                         "name": "rackspace_cloud_domain"
                     }
