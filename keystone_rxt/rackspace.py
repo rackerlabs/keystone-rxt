@@ -22,7 +22,6 @@ from keystone.auth.plugins import password
 from keystone.auth.plugins import base
 from keystone.auth.plugins import mapped
 from keystone.common import provider_api
-import keystone.conf
 from keystone import exception
 from keystone.i18n import _
 
@@ -30,11 +29,6 @@ from keystone.i18n import _
 LOG = log.getLogger(__name__)
 PROVIDERS = provider_api.ProviderAPIs
 RACKPSACE_IDENTITY_V2 = "https://identity.api.rackspacecloud.com/v2.0/tokens"
-
-
-# The keystone config options used by this module and forced to be RXT
-keystone.conf.CONF.set_override("assertion_prefix", "RXT", group="federation")
-keystone.conf.CONF.set_override("caching", True, group="federation")
 
 
 class RXTv2Credentials(object):
