@@ -58,10 +58,21 @@ The configuration file entry will look something like this
 methods = password,token,application_credential
 password = rxt
 ```
-
 > Take note that the `password` method is defined and that the password plugin is set to use `rxt`.
 
-> Yes, effectively one line is all that's required in config. After the configuration edit, restart keystone.
+If you have multifactor auth enabled, and want to support users that are running work loads with it
+the plugin also supports TOTP. To enable TOPT make sure `totp` is in your allowed authentication
+methods and that the `totp` plugin is using the `rxt` plugin.
+
+``` conf
+[auth]
+methods = password,token,application_credential,totp
+password = rxt
+totp = rxt
+```
+
+Yes, effectively one line is all that's required in config (maybe two with totp support). After the
+configuration edit, be sure to restart keystone.
 
 ### Identity mapping, project, and domain setup
 
@@ -116,6 +127,33 @@ clouds:
     identity_api_version: "3"
 ```
 
+If you're running the CLI tools with a TOTP enabled user and you don't want to use your API key,
+setup your `clouds.yaml` with the following options so that it knows to run with `password` and
+`totp`.
+
+``` yaml
+clouds:
+  rxt-local-mfa:
+    auth_type: "v3multifactor"
+    auth_methods:
+      - v3password
+      - v3totp
+    auth:
+      auth_url: http://localhost:5000/v3
+      project_name: 67890_Development
+      project_domain_name: rackspace_cloud_domain
+      username: test
+      password: secrete
+      user_domain_name: rackspace_cloud_domain
+    region_name: RegionOne
+    interface: internal
+    identity_api_version: "3"
+```
+
+> Enabling TOTP will require you to use your one time token to run commands, this token can be
+  defined on the CLI with the `--os-passcode` flag; for example the simple image list would look
+  like so `openstack --os-cloud local --os-passcode 123456 image list`
+
 Once you have the clouds CLI setup, run commands normally.
 
 ```shell
@@ -152,7 +190,6 @@ Connection: close
 
 With the about command we can pull out the value of `X-Subject-Token` and store it as `OS_TOKEN` so that we can authenticate
 to the various APIs supported by our service catalog.
-
 
 ``` shell
 curl -H "Accept: application/json" -H "X-Auth-Token: $OS_TOKEN" http://localhost:9292/v2/images

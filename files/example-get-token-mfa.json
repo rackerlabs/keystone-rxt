@@ -1,0 +1,28 @@
+{
+    "auth": {
+        "identity": {
+            "methods": [
+                "password",
+                "totp"
+            ],
+            "password": {
+                "user": {
+                    "name": "RACKSPACE_USERNAME",
+                    "password": "RACKSPACE_CREDENTIALS",
+                    "domain": {
+                        "name": "rackspace_cloud_domain"
+                    }
+                }
+            },
+            "totp": {
+                "user": {
+                    "name": "RACKSPACE_USERNAME",
+                    "passcode": "RACKSPACE_TOTP_CODE",
+                    "domain": {
+                        "name": "rackspace_cloud_domain"
+                    }
+                }
+            }
+        }
+    }
+}
