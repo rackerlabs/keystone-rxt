@@ -25,7 +25,7 @@ from keystone.auth.plugins import base
 from keystone.auth.plugins import mapped
 from keystone.auth.plugins import password
 from keystone.auth.plugins import totp
-from keystone.common import cache
+from keystone.common import cache as ks_cache
 from keystone.common import provider_api
 import keystone.conf
 from keystone import exception
@@ -34,19 +34,21 @@ from keystone.i18n import _
 
 keystone.conf.CONF.set_override("caching", True, group="federation")
 
-RXT_SESSION_CACHE = cache.create_region(name="rxt_sess")
-RXT_SESSION_CACHE.expiration_time = 120
-cache.configure_cache(region=RXT_SESSION_CACHE)
-RXT_SERVICE_CACHE = cache.create_region(name="rxt_srv")
-RXT_SERVICE_CACHE.expiration_time = 60
-cache.configure_cache(region=RXT_SERVICE_CACHE)
+RXT_SESSION_CACHE = ks_cache.create_region(name="rxt_sess")
+ks_cache.cache.configure_cache_region(keystone.conf.CONF, RXT_SESSION_CACHE)
+RXT_SESSION_CACHE.expiration_time = 60
+
+RXT_SERVICE_CACHE = ks_cache.create_region(name="rxt_srv")
+ks_cache.cache.configure_cache_region(keystone.conf.CONF, RXT_SERVICE_CACHE)
+RXT_SERVICE_CACHE.expiration_time = 30
+
 LOG = log.getLogger(__name__)
 PROVIDERS = provider_api.ProviderAPIs
 RACKPSACE_IDENTITY_V2 = "https://identity.api.rackspacecloud.com/v2.0/tokens"
 
 
 class RXTv2Credentials(object):
-    """Return an autneitcation object based on the provided auth payload.
+    """Return an authenticate object based on the provided auth payload.
 
     Check the value type of the provided auth payload and determine the
     correct authentication method.
@@ -56,19 +58,42 @@ class RXTv2Credentials(object):
     rxt_auth_payload = None
     rxt_headers = dict()
     session = requests.Session()
+    session_id = None
 
     def __init__(self, auth_payload):
+        """Initialize the RXTv2Credentials object.
+
+        This method is used to initialize the RXTv2Credentials object. The
+        method will hash the auth payload and username for use in caching
+        and session headers.
+
+        :param dict auth_payload: The auth payload to be used for authentication.
+        """
+
         self.auth_payload = auth_payload
         self.hashed_auth_payload = hashlib.sha224(
             json.dumps(self.auth_payload, sort_keys=True).encode("utf-8")
         ).hexdigest()
+        self.hashed_auth_user = hashlib.sha224(
+            self._username.encode("utf-8")
+        ).hexdigest()
 
     @property
     def _sessionID(self):
+        """Return a parsed sessionID property.
+
+        This property is used to return the sessionID from the session header.
+
+        :returns: The sessionID from the session header.
+        :rtype: str or None
+        """
+
         r = re.compile(r"""sessionId='(.*?[^\\])'""")
         try:
-            rxt_totp = flask.request.environ.get("RXT_TOTP")
-            session_id = r.findall(rxt_totp).pop()
+            session_header = RXT_SESSION_CACHE.get(self.hashed_auth_user)
+            if session_header:
+                LOG.debug("Using cached Rackspace Session header")
+            session_id = r.findall(session_header).pop()
         except (IndexError, TypeError):
             return None
         else:
@@ -76,7 +101,13 @@ class RXTv2Credentials(object):
 
     @property
     def _username(self):
-        """This property is used to return the username from the auth payload."""
+        """Return a parsed username property.
+
+        This property is used to return the username from the auth payload.
+
+        :returns: The username from the auth payload.
+        :rtype: str
+        """
 
         try:
             return self.auth_payload["user"]["name"]
@@ -90,7 +121,13 @@ class RXTv2Credentials(object):
 
     @property
     def _password(self):
-        """This property is used to return the password from the auth payload."""
+        """Return a parsed password property.
+
+        This property is used to return the password from the auth payload.
+
+        :returns: The password from the auth payload.
+        :rtype: str
+        """
 
         try:
             return self.auth_payload["user"]["password"]
@@ -101,18 +138,28 @@ class RXTv2Credentials(object):
 
     @property
     def _passcode(self):
-        """This property is used to return the password from the auth payload."""
+        """Return a parsed passcode property.
+
+        This property is used to return the passcode from the auth payload.
+
+        :returns: The passcode from the auth payload.
+        :rtype: str or None
+        """
 
         try:
             return self.auth_payload["user"]["passcode"]
         except KeyError:
-            raise exception.Unauthorized(
-                _("The authentication payload is missing the passcode")
-            )
+            return None
 
     @property
     def apiKeyCredentials(self):
-        """Return the API type."""
+        """Return the API type.
+
+        This method is used to return the apiKeyCredentials auth payload.
+
+        :returns: The apiKeyCredentials auth payload.
+        :rtype: tuple
+        """
 
         return "apiKeyCredentials", {
             "auth": {
@@ -125,7 +172,13 @@ class RXTv2Credentials(object):
 
     @property
     def passwordCredentials(self):
-        """Return the Password type."""
+        """Return the Password type.
+
+        This method is used to return the passwordCredentials auth payload.
+
+        :returns: The passwordCredentials auth payload.
+        :rtype: tuple
+        """
 
         return "passwordCredentials", {
             "auth": {
@@ -138,7 +191,13 @@ class RXTv2Credentials(object):
 
     @property
     def passcodeCredentials(self):
-        """Return the Passcode type."""
+        """Return the Passcode type.
+
+        This method is used to return the passcodeCredentials auth payload.
+
+        :returns: The passcodeCredentials auth payload.
+        :rtype: tuple
+        """
 
         return "passcodeCredentials", {
             "auth": {
@@ -157,24 +216,36 @@ class RXTv2Credentials(object):
         apiKeyCredentials, otherwise the passwordCredentials will be used.
         """
 
-        if self._sessionID:
+        LOG.debug("Rackspace IDP Login started")
+        self.session_id = self._sessionID
+        if self._passcode and self.session_id:
+            LOG.debug("Using passcode auth payload")
             self.rxt_auth_payload = self.passcodeCredentials
-            self.rxt_headers["X-SessionId"] = self._sessionID
+            self.rxt_headers["X-SessionId"] = self.session_id
         else:
             for hash_type in self.hash_types:
                 if re.match(hash_type, self._password) is not None:
+                    LOG.debug("Using api key auth payload")
                     self.rxt_auth_payload = self.apiKeyCredentials
                     break
-            else:
-                self.rxt_auth_payload = self.passwordCredentials
+
+        if not self.rxt_auth_payload:
+            LOG.debug("Using password auth payload")
+            self.rxt_auth_payload = self.passwordCredentials
 
         return self
 
     def __exit__(self, *args, **kwargs):
+        """Close the session.
+
+        This method is used to close the session after the authentication
+        method has completed.
+        """
+
         self.session.close()
         LOG.debug("Rackspace IDP Login complete, returning to OS")
 
-    def set_request_headers(
+    def set_federation_env(
         self,
         username=None,
         email=None,
@@ -182,8 +253,22 @@ class RXTv2Credentials(object):
         tenant_name=None,
         tenant_id=None,
         org_person_type=None,
-        totp=None,
     ):
+        """Set the federation environment variables.
+
+        Set the federation environment variables based on the provided
+        parameters. If the parameters are not provided the environment
+        variables will not be set.
+
+        :param str username: The username to be set in the environment.
+        :param str email: The email to be set in the environment.
+        :param str domain_id: The domain_id to be set in the environment.
+        :param str tenant_name: The tenant_name to be set in the environment.
+        :param str tenant_id: The tenant_id to be set in the environment.
+        :param str org_person_type: The org_person_type to be set in the
+                                    environment.
+        """
+
         if username:
             flask.request.environ["RXT_UserName"] = username
         if email:
@@ -196,10 +281,15 @@ class RXTv2Credentials(object):
             flask.request.environ["RXT_TenantID"] = tenant_id
         if org_person_type:
             flask.request.environ["RXT_orgPersonType"] = org_person_type
-        if totp:
-            flask.request.environ["RXT_TOTP"] = totp
 
     def parse_service_catalog(self, service_catalog):
+        """Parse the Rackspace Service Catalog and set the environment variables.
+
+        We're parsing the Rackspace Service Catalog and setting the federation
+        environment variables. If there's an error parsing the service catalog
+        the method will deny access.
+        """
+
         try:
             access = service_catalog["access"]
             access_user = access["user"]
@@ -210,7 +300,7 @@ class RXTv2Credentials(object):
                     for i in service_catalog["access"]["user"]["roles"]
                 ]
             )
-            self.set_request_headers(
+            self.set_federation_env(
                 username=access_user["name"],
                 email=access_user["email"],
                 domain_id=access_user["RAX-AUTH:domainId"],
@@ -225,6 +315,12 @@ class RXTv2Credentials(object):
             )
 
     def return_auth_handler(self):
+        """Return the auth handler response.
+
+        Using the provided auth payload, return the auth handler response.
+        This will work for both scoped and unscoped tokens.
+        """
+
         self.auth_payload["identity_provider"] = "rackspace"
         self.auth_payload["protocol"] = "rackspace"
         if "id" in self.auth_payload:
@@ -247,17 +343,19 @@ class RXTv2Credentials(object):
             status=True, response_body=None, response_data=response_data
         )
 
-    def _rxt_auth(self, auth_data):
-        session_header = RXT_SESSION_CACHE.get(self.hashed_auth_payload)
-        if session_header:
-            LOG.debug("Using cached Rackspace Session Header")
-            self.set_request_headers(
-                username=self._username,
-                org_person_type="totp",
-                totp=session_header,
-            )
-            return
+    def _rxt_auth(self, auth_data, auth_type):
+        """Authenticate using the Rackspace Identity API.
 
+        Internal method used to authenticate using the Rackspace Identity API.
+        The method will return True if the Rackspace Identity API returns a
+        boolean. The boolean informs the main auth method if the user is
+        attempting to use rackspace MFA.
+
+        :param dict auth_data: The auth data to be used for authentication.
+        :param str auth_type: The auth type to be used for authentication.
+        :returns: True if the Rackspace Identity API returns a boolean.
+        :rtype: bool
+        """
         service_catalog = RXT_SERVICE_CACHE.get(self.hashed_auth_payload)
         if service_catalog:
             try:
@@ -272,12 +370,16 @@ class RXTv2Credentials(object):
                 if token_expire.timestamp() > token_expire.now().timestamp():
                     LOG.debug("Using cached Rackspace service catalog")
                     self.parse_service_catalog(service_catalog=service_catalog)
-                    return
+                    return False
                 else:
                     LOG.debug(
                         "Rackspace service catalog is expired, running cleanup."
                     )
                     RXT_SERVICE_CACHE.delete(self.hashed_auth_payload)
+
+        if self.session_id and auth_type == "passwordCredentials":
+            LOG.debug("Found cached Rackspace session header.")
+            return True
 
         r = self.session.post(
             RACKPSACE_IDENTITY_V2,
@@ -285,23 +387,38 @@ class RXTv2Credentials(object):
             headers=self.rxt_headers,
         )
         if r.status_code == 401 and "WWW-Authenticate" in r.headers:
-            self.set_request_headers(
-                username=self._username,
-                org_person_type="totp",
-                totp=r.headers["WWW-Authenticate"],
-            )
             LOG.debug("Caching Rackspace session header")
             RXT_SESSION_CACHE.set(
-                self.hashed_auth_payload, r.headers["WWW-Authenticate"]
+                self.hashed_auth_user, r.headers["WWW-Authenticate"]
             )
+            return True
         else:
             r.raise_for_status()
             service_catalog = r.json()
             self.parse_service_catalog(service_catalog=service_catalog)
             LOG.debug("Caching Rackspace service catalog")
             RXT_SERVICE_CACHE.set(self.hashed_auth_payload, service_catalog)
+            return False
 
-    def rxt_auth(self):
+    def rxt_auth(self, rxt_auth_mfa=False):
+        """Authenticate using the Rackspace Identity API.
+
+        This method is used to authenticate using the Rackspace Identity API.
+        The method will return an auth handler response if the Rackspace
+        Identity API returns a boolean. The boolean informs the main auth
+        method if the user is attempting to use rackspace MFA.
+
+        > In the event of a failure when using the apiKeyCredentials auth
+          method, the method will attempt to re-authenticate using the
+          passwordCredentials auth method.
+
+        :param bool rxt_auth_mfa: If True, the user is attempting to use
+                                  rackspace MFA.
+        :returns: An auth handler response if the Rackspace Identity API
+                  returns a boolean
+        :rtype: keystone.auth.plugins.base.AuthHandlerResponse
+        """
+
         auth_type, auth_data = self.rxt_auth_payload
         LOG.debug(
             "Attempting to authenticate using {auth_type}".format(
@@ -309,26 +426,35 @@ class RXTv2Credentials(object):
             )
         )
         try:
-            self._rxt_auth(auth_data=auth_data)
+            rxt_auth_mfa = self._rxt_auth(
+                auth_data=auth_data, auth_type=auth_type
+            )
         except requests.HTTPError:
             if auth_type == "apiKeyCredentials":
                 self.rxt_auth_payload = self.passwordCredentials
                 LOG.debug(
                     "Attempting to re-authenticate using passwordCredentials"
                 )
-                return self.rxt_auth()
+                return self.rxt_auth(rxt_auth_mfa=False)
 
             raise exception.Unauthorized(
                 "Failed to authenticate using the Rackspace Identity API"
                 " with {auth_type}".format(auth_type=auth_type)
             )
         else:
-            return self.return_auth_handler()
+            if rxt_auth_mfa is False:
+                return self.return_auth_handler()
+            else:
+                return base.AuthHandlerResponse(
+                    status=False,
+                    response_body=None,
+                    response_data=None,
+                )
 
 
 class RXTPassword(password.Password):
     def authenticate(self, auth_payload):
-        """Turn a signed request with an access key into a keystone token."""
+        """Return a signed request with an access key into a keystone token."""
 
         try:
             assert (
@@ -346,6 +472,7 @@ class RXTPassword(password.Password):
 
 class RXTTOTP(totp.TOTP):
     def authenticate(self, auth_payload):
+        """Return a signed request with an access key into a keystone token."""
         try:
             assert (
                 auth_payload["user"]["domain"]["name"]

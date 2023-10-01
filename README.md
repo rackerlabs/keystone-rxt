@@ -188,9 +188,17 @@ x-openstack-request-id: req-5a0eb098-eecc-41e1-a10d-d872dc867561
 Connection: close
 ```
 
-With the about command we can pull out the value of `X-Subject-Token` and store it as `OS_TOKEN` so that we can authenticate
-to the various APIs supported by our service catalog.
+With the about command we can pull out the value of `X-Subject-Token` and store it as `OS_TOKEN` so that we can
+authenticate to the various APIs supported by our service catalog.
 
 ``` shell
 curl -H "Accept: application/json" -H "X-Auth-Token: $OS_TOKEN" http://localhost:9292/v2/images
 ```
+
+##### Special Notes
+
+* Rackspace MFA
+
+This plugin assumes that Keystone has been setup with some form of caching; additionally caching is required when
+interacting with Rackspace MFA. So while it is a best practice to setup caching for Keystone, it is absolutely
+required if MFA is going to be offered within the environment.

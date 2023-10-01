@@ -160,27 +160,9 @@
                 "type": "RXT_orgPersonType",
                 "not_any_of": [
                     "admin",
-                    "creator"
-                ]
-            }
-        ]
-    },
-    {
-        "local": [
-            {
-                "user": {
-                    "name": "{0}"
-                }
-            }
-        ],
-        "remote": [
-            {
-                "type": "RXT_UserName"
-            },
-            {
-                "type": "RXT_orgPersonType",
-                "any_one_of": [
-                    "totp"
+                    "creator",
+                    "default",
+                    "tenant-access"
                 ]
             }
         ]
