@@ -94,20 +94,22 @@ class RXTv2Credentials(object):
         """Return a parsed sessionID property.
 
         This property is used to return the sessionID from the session header.
+        The property will first check the local cache for the sessionID and
+        then the environmental variable. If the sessionID is not found in
+        either location the property will return None.
 
         :returns: The sessionID from the session header.
         :rtype: str or None
         """
 
-        r = re.compile(r"""sessionId='(.*?[^\\])'""")
-        try:
-            session_header = RXT_SESSION_CACHE.get(self.hashed_auth_user)
-            if session_header:
-                LOG.debug("Using cached Rackspace Session header")
-            session_id = r.findall(session_header).pop()
-        except (IndexError, TypeError):
-            return None
-        else:
+        session_id = RXT_SESSION_CACHE.get(self.hashed_auth_user)
+        if session_id:
+            LOG.debug("Using cached Rackspace Session header")
+            return session_id
+
+        session_id = flask.request.environ.get("RXT_SessionID")
+        if session_id:
+            LOG.debug("Using environmental Rackspace Session header")
             return session_id
 
     @property
@@ -129,6 +131,47 @@ class RXTv2Credentials(object):
                 raise exception.Unauthorized(
                     _("The authentication payload is missing the name")
                 )
+
+    @staticmethod
+    def _return_session_id(session_header):
+        """Return the sessionID from the session header.
+
+        Using the provided session header, return the sessionID from the
+        session header if it exists.
+
+        :param str session_header: The session header to be parsed.
+        :returns: The sessionID from the session header.
+        :rtype: str or None
+        """
+
+        r = re.compile(r"""sessionId='(.*?[^\\])'""")
+        try:
+            return r.findall(session_header).pop()
+        except IndexError:
+            raise exception.AuthPluginException(
+                "Could not parse the Rackspace Session header for sessionId"
+            )
+
+    def _set_session_id(self, session_header):
+        """Set the sessionID from the session header into the local cache.
+
+        Using the provided session header, return the sessionID from the
+        session header if it exists.
+
+        :param str session_header: The session header to be parsed.
+        :returns: The sessionID from the session header.
+        :rtype: str or None
+        """
+
+        session_id = self._return_session_id(
+            session_header=session_header
+        )
+        if session_id:
+            RXT_SESSION_CACHE.set(
+                self.hashed_auth_user,
+                session_id,
+            )
+            flask.request.environ["RXT_SessionID"] = session_id
 
     def _set_federation_env(
         self,
@@ -270,7 +313,7 @@ class RXTv2Credentials(object):
                     )
                     RXT_SERVICE_CACHE.delete(self.hashed_auth_payload)
 
-        if self.session_id and auth_type == "passwordCredentials":
+        if auth_type == "passwordCredentials" and self.session_id:
             LOG.debug("Found cached Rackspace session header for MFA.")
             return self._return_auth_handler(status=False)
 
@@ -286,9 +329,7 @@ class RXTv2Credentials(object):
         )
         if r.status_code == 401 and "WWW-Authenticate" in r.headers:
             LOG.debug("Caching Rackspace session header")
-            RXT_SESSION_CACHE.set(
-                self.hashed_auth_user, r.headers["WWW-Authenticate"]
-            )
+            self._set_session_id(session_header=r.headers["WWW-Authenticate"])
             return self._return_auth_handler(status=False)
         else:
             r.raise_for_status()
@@ -300,6 +341,8 @@ class RXTv2Credentials(object):
 
 
 class RXPWAuth(RXTv2Credentials):
+    """Rackspace Password Authentication."""
+
     def __enter__(self):
         """Return the correct authentication method.
 
@@ -410,6 +453,8 @@ class RXPWAuth(RXTv2Credentials):
 
 
 class RXTTOTPAuth(RXTv2Credentials):
+    """Rackspace TOTP Authentication."""
+
     def __enter__(self):
         """Return the correct authentication method.
 
@@ -484,6 +529,13 @@ class RXTTOTPAuth(RXTv2Credentials):
 
 
 class RXTPassword(password.Password):
+    """Rackspace Authentication.
+
+    This class is used to authenticate using the Rackspace Identity API
+    with a username and password. The class will attempt to authenticate
+    using the Rackspace Identity API with the provided auth payload.
+    """
+
     def authenticate(self, auth_payload):
         """Return a signed request with an access key into a keystone token."""
 
@@ -502,8 +554,16 @@ class RXTPassword(password.Password):
 
 
 class RXTTOTP(totp.TOTP):
+    """Rackspace TOTP Authentication.
+
+    This class is used to authenticate using the Rackspace Identity API
+    with TOTP. The class will attempt to authenticate using the Rackspace
+    Identity API with the provided MFA auth payload.
+    """
+
     def authenticate(self, auth_payload):
         """Return a signed request with an access key into a keystone token."""
+
         try:
             assert (
                 auth_payload["user"]["domain"]["name"]
