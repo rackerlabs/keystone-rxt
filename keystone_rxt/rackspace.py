@@ -23,10 +23,8 @@ import flask
 
 from keystone.auth.plugins import base
 from keystone.auth.plugins import mapped
-from keystone.auth.plugins import password
 from keystone.auth.plugins import totp
 from keystone.common import cache as ks_cache
-from keystone.common import provider_api
 import keystone.conf
 from keystone import exception
 from keystone.i18n import _
@@ -43,7 +41,7 @@ ks_cache.cache.configure_cache_region(keystone.conf.CONF, RXT_SERVICE_CACHE)
 RXT_SERVICE_CACHE.expiration_time = 60
 
 LOG = log.getLogger(__name__)
-PROVIDERS = provider_api.ProviderAPIs
+PROVIDERS = mapped.PROVIDERS
 RACKPSACE_IDENTITY_V2 = "https://identity.api.rackspacecloud.com/v2.0/tokens"
 
 
@@ -528,7 +526,7 @@ class RXTTOTPAuth(RXTv2Credentials):
             )
 
 
-class RXTPassword(password.Password):
+class RXTPassword(mapped.Mapped):
     """Rackspace Authentication.
 
     This class is used to authenticate using the Rackspace Identity API
