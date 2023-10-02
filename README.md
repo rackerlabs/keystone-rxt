@@ -194,11 +194,3 @@ authenticate to the various APIs supported by our service catalog.
 ``` shell
 curl -H "Accept: application/json" -H "X-Auth-Token: $OS_TOKEN" http://localhost:9292/v2/images
 ```
-
-##### Special Notes
-
-* Rackspace MFA
-
-This plugin assumes that Keystone has been setup with some form of caching; additionally caching is required when
-interacting with Rackspace MFA. So while it is a best practice to setup caching for Keystone, it is absolutely
-required if MFA is going to be offered within the environment.
