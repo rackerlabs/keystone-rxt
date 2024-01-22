@@ -223,6 +223,7 @@ class RXTv2Credentials(object):
                 [
                     i["name"].split(":")[-1]
                     for i in service_catalog["access"]["user"]["roles"]
+                    if access_token["tenant"]["id"] in i.get("tenantId", "")
                 ]
             )
             self._set_federation_env(
