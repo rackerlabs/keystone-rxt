@@ -1,0 +1,42 @@
+name: Create PyPi release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - '*'
+  release:
+    types:
+      - created
+
+jobs:
+  wheel:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write  # needed to create/update the release from the tag
+      id-token: write  # needed to allow trusted PyPi publishing
+
+    environment:
+      name: pypi
+      url: https://pypi.org/p/keystone-rxt
+
+    steps:
+        # grab the code
+      - uses: actions/checkout@v4
+        # install what's needed to build the wheel and src dist
+      - run: pip install wheel build
+        # actually build it
+      - run: pyproject-build
+        # publish tags as releases
+      - name: Publish package distributions to PyPI
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # create/update GitHub releases based on tags
+      - uses: ncipollo/release-action@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          allowUpdates: true  # allow users to create a release on the web page to trigger
+          artifacts: "dist/*.whl,dist/*.gz"
+          generateReleaseNotes: true
