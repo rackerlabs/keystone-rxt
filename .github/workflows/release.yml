@@ -4,16 +4,6 @@ name: Create and publish a Docker image
 # Configures this workflow to run every time a change is pushed to the branch called `release`.
 on:
   workflow_dispatch:
-    inputs:
-      imageTag:
-        description: 'Set tag for the image'
-        required: true
-        default: 'master-ubuntu_jammy'
-        type: choice
-        options:
-        - master-ubuntu_jammy
-        - 2023.1-ubuntu_jammy
-        - 2023.2-ubuntu_jammy
 
 # Defines two custom environment variables for the workflow. These are used for the Container registry domain, and a name for the Docker image that this workflow builds.
 env:
@@ -24,6 +14,12 @@ env:
 jobs:
   build-and-push-image:
     runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        openstack: [2023.1, 2023.2]
+        distro: [ubuntu_jammy]
+
     # Sets the permissions granted to the `GITHUB_TOKEN` for the actions in this job.
     permissions:
       contents: read
@@ -52,7 +48,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: "ghcr.io/${{ env.IMAGE_NAME }}:${{ github.event.inputs.imageTag }}"
+          tags: "ghcr.io/${{ env.IMAGE_NAME }}:${{ matrix.openstack }}-${{ matrix.distro }}"
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ github.event.inputs.imageTag }}
+            VERSION=${{ matrix.openstack }}-${{ matrix.distro }
