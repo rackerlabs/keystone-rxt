@@ -47,5 +47,6 @@ jobs:
           push: true
           tags: "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.openstack }}-${{ matrix.distro }}"
           labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
           build-args: |
             VERSION=${{ matrix.openstack }}-${{ matrix.distro }
