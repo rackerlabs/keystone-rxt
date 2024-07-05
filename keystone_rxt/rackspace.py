@@ -17,6 +17,8 @@ import re
 import hashlib
 import json
 
+import keystone.conf.utils
+import keystone.exception
 import requests
 from oslo_log import log
 import flask
@@ -29,7 +31,6 @@ from keystone.common import cache as ks_cache
 import keystone.conf
 from keystone import exception
 from keystone.i18n import _
-
 
 keystone.conf.CONF.set_override("caching", True, group="federation")
 
@@ -44,6 +45,245 @@ RXT_SERVICE_CACHE.expiration_time = 60
 LOG = log.getLogger(__name__)
 PROVIDERS = mapped.PROVIDERS
 RACKPSACE_IDENTITY_V2 = "https://identity.api.rackspacecloud.com/v2.0/tokens"
+ROLE_ATTRIBUTE = keystone.conf.cfg.StrOpt(
+    "role_attribute",
+    help=keystone.conf.utils.fmt(
+        """The attribute to use for the role granting account access.
+
+This attribute can be any role within the Rackspace Identity API.
+The system will process the attribute as a prefix sourcing the `tenantId`
+from the `user` `roles` found within Rackspace Identity API catalog.
+
+If an empty string is used, the system will disable this mechanism and
+fall back to using the DDI.
+"""
+    ),
+    default="os_flex",
+)
+ROLE_ATTRIBUTE_ENFORCEMENT = keystone.conf.cfg.BoolOpt(
+    "role_attribute_enforcement",
+    help=keystone.conf.utils.fmt(
+        """Enables or disables the enforcement of role attributes.
+
+If disabled and no role is found, the plugin will fall back to using the DDI.
+""",
+    ),
+    default=False,
+)
+
+keystone.conf.CONF.register_opts(
+    [ROLE_ATTRIBUTE, ROLE_ATTRIBUTE_ENFORCEMENT], group="rackspace"
+)
+
+
+class RuleProcessor(mapped.utils.RuleProcessor):
+    """Rule processor subclass to dynamically map multiple projects.
+
+    This class will dynamically map multiple projects based on the
+    provided mapping rules. The class will iterate through the mapping
+    rules to find assertions that are valid and return the mapped
+    properties.
+
+    The system ensures that an account with multiple roles defined by
+    `role_attribute` automatically map to `projects` with expected RBAC.
+    """
+
+    def process(self, assertion_data):
+        """Transform assertion to a dictionary.
+
+        The dictionary contains mapping of user name and group ids
+        based on mapping rules.
+
+        This function will iterate through the mapping rules to find
+        assertions that are valid.
+
+        :param assertion_data: an assertion containing values from an IdP
+        :type assertion_data: dict
+
+        Example assertion_data::
+
+            {
+                'RXT_UserName': 'testacct',
+                'RXT_Email': 'testacct@example.com',
+                'RXT_DomainID': 'rackspace_cloud_domain',
+                'RXT_TenantName': '00000000-0000-0000-0000-000000000000;0000000_Flex',
+                'RXT_TenantID': '00000000-0000-0000-0000-000000000000;0000000_Flex',
+                'RXT_orgPersonType': 'default;tenant-access'
+            }
+
+        :returns: dictionary with user and projects mapping
+
+        The expected return structure is::
+            {
+                "user": {
+                    "name": "testacct",
+                    "email": "testacct@example.com",
+                    "domain": {
+                        "name": "rackspace_cloud_domain"
+                    },
+                    "type": "ephemeral",
+                },
+                "group_ids": [],
+                "group_names": [],
+                "projects": [
+                    {
+                        "name": "00000000-0000-0000-0000-000000000000",
+                        "domain": {"name": "rackspace_cloud_domain"},
+                        "roles": [
+                            {"name": "member"},
+                            {"name": "load-balancer_member"},
+                            {"name": "heat_stack_user"},
+                        ],
+                    },
+                    {
+                        "name": "0000000_Flex",
+                        "domain": {
+                            "name": "rackspace_cloud_domain"
+                        },
+                        "roles": [
+                            {"name": "member"},
+                            {"name": "load-balancer_member"},
+                            {"name": "heat_stack_user"},
+                        ],
+                    },
+                ],
+            }
+        """
+        # Assertions will come in as string key-value pairs, and will use a
+        # semi-colon to indicate multiple values, i.e. groups.
+        # This will create a new dictionary where the values are arrays, and
+        # any multiple values are stored in the arrays.
+        LOG.debug("assertion data: %s", assertion_data)
+        assertion = {
+            n: v.split(";")
+            for n, v in assertion_data.items()
+            if isinstance(v, str)
+        }
+        LOG.debug("assertion: %s", assertion)
+        identity_values = []
+
+        LOG.debug("rules: %s", self.rules)
+        for rule in self.rules:
+            direct_maps = self._verify_all_requirements(
+                rule["remote"], assertion
+            )
+
+            # If the compare comes back as None, then the rule did not apply
+            # to the assertion data, go on to the next rule
+            if direct_maps is None:
+                continue
+
+            # If there are no direct mappings, then add the local mapping
+            # directly to the array of saved values. However, if there is
+            # a direct mapping, then perform variable replacement.
+            if not direct_maps:
+                identity_values += rule["local"]
+            else:
+                LOG.debug("original_direct_maps: %s", direct_maps)
+                new_direct_maps = list()
+                for map_index, map_value in enumerate(direct_maps):
+                    if isinstance(map_value, list):
+                        for iso_value in map_value:
+                            _copy_direct_maps = list(direct_maps)
+                            _copy_direct_maps[map_index] = iso_value
+                            _direct_map = mapped.utils.DirectMaps()
+                            for item in _copy_direct_maps:
+                                _direct_map.add([item])
+                            else:
+                                LOG.debug("new_direct_map: %s", _direct_map)
+                                new_direct_maps.append(_direct_map)
+
+                for local in rule["local"]:
+                    if new_direct_maps:
+                        new_local = dict()
+                        for direct_map in new_direct_maps:
+                            new_local = self._merge_dict(
+                                new_local,
+                                self._update_local_mapping(local, direct_map),
+                            )
+                        identity_values.append(new_local)
+                    else:
+                        new_local = self._update_local_mapping(
+                            local, direct_maps
+                        )
+                        identity_values.append(new_local)
+
+        LOG.debug("identity_values: %s", identity_values)
+        mapped_properties = self._transform(identity_values)
+
+        LOG.debug("mapped_properties: %s", mapped_properties)
+        return mapped_properties
+
+    def _merge_dict(self, base, new, extend=True):
+        """Recursively merge new into base.
+
+        :param base: Base dictionary to load items into
+        :type base: Dictionary
+        :param new: New dictionary to merge items from
+        :type new: Dictionary
+        :param extend: Boolean option to enable or disable extending
+                    iterable arrays.
+        :type extend: Boolean
+        :returns: Dictionary
+        """
+
+        if isinstance(new, dict):
+            for key, value in new.items():
+                if key not in base:
+                    base[key] = value
+                elif extend and isinstance(value, dict):
+                    base[key] = self._merge_dict(
+                        base=base.get(key, {}), new=value, extend=extend
+                    )
+                elif extend and isinstance(value, list):
+                    base[key].extend(value)
+                elif extend and isinstance(value, (tuple, set)):
+                    if isinstance(base.get(key), tuple):
+                        base[key] += tuple(value)
+                    elif isinstance(base.get(key), set):
+                        base[key].update(value)
+                else:
+                    base[key] = new[key]
+        elif isinstance(new, list):
+            if extend:
+                base.extend(new)
+            else:
+                base = new
+
+        return base
+
+
+class RuleProcessorToHonorDomainOption(
+    mapped.utils.RuleProcessorToHonorDomainOption, RuleProcessor
+):
+    """RuleProcessorToHonorDomainOption for dynamic scheme v2.0.
+
+    The RuleProcessorToHonorDomainOption class is used to dynamically map
+    multiple projects based on the provided mapping rules. The class will
+    iterate through the mapping rules to find assertions that are valid and
+    return the mapped properties. The system ensures that an account with
+    multiple roles defined by `role_attribute` automatically map to `projects`
+    with expected RBAC.
+
+    The subclass will ensure that the Rackspace plugin is scheme v2.0
+    compatible.
+    """
+
+
+# NOTE(cloudnull): This is to ensure that the RuleProcessor is used for the
+#                  1.0 schema and the RuleProcessorToHonorDomainOption is
+#                  used for the 2.0 schema when running with the rxt auth
+#                  plugin.
+mapped.utils.IDP_ATTRIBUTE_MAPPING_SCHEMAS = {
+    "1.0": {
+        "schema": mapped.utils.IDP_ATTRIBUTE_MAPPING_SCHEMA_1_0,
+        "processor": RuleProcessor,
+    },
+    "2.0": {
+        "schema": mapped.utils.IDP_ATTRIBUTE_MAPPING_SCHEMA_2_0,
+        "processor": RuleProcessorToHonorDomainOption,
+    },
+}
 
 
 class RXTv2Credentials(object):
@@ -215,30 +455,55 @@ class RXTv2Credentials(object):
         the method will deny access.
         """
 
+        role_attribute = keystone.conf.CONF.rackspace.role_attribute
+        access_projects = list()
+
         try:
             access = service_catalog["access"]
             access_user = access["user"]
             access_token = access["token"]
-            access_user_roles = set(
-                [
-                    i["name"].split(":")[-1]
-                    for i in service_catalog["access"]["user"]["roles"]
-                    if access_token["tenant"]["id"] in i.get("tenantId", "")
-                ]
-            )
+            access_user_roles = set()
+
+            for role in service_catalog["access"]["user"]["roles"]:
+                rxt_tenantId = role.get("tenantId")
+                try:
+                    if access_token["tenant"]["id"] in rxt_tenantId:
+                        access_user_roles.add(role["name"].split(":")[-1])
+                    role, value = rxt_tenantId.split(":")
+                except (ValueError, TypeError):
+                    continue
+                else:
+                    if role.startswith(role_attribute):
+                        access_projects.append(value)
+
+            access_projects = sorted(access_projects)
+            if not keystone.conf.CONF.rackspace.role_attribute_enforcement:
+                access_projects.append(
+                    "{tenant}_Flex".format(tenant=access_token["tenant"]["id"])
+                )
+
+            if len(access_projects) < 1:
+                raise exception.Unauthorized(
+                    _(
+                        "User does not have the required role"
+                        " attribute to continue."
+                    )
+                )
+
+            tenant_ids = ";".join(access_projects)
             self._set_federation_env(
                 username=access_user["name"],
                 email=access_user["email"],
                 domain_id=access_user["RAX-AUTH:domainId"],
-                tenant_name=access_token["tenant"]["name"],
-                tenant_id=access_token["tenant"]["id"],
-                org_person_type=";".join(access_user_roles),
+                tenant_name=tenant_ids,
+                tenant_id=tenant_ids,
+                org_person_type=";".join(sorted(access_user_roles)),
             )
         except KeyError as e:
             raise exception.Unauthorized(
                 _(
-                    "Could not parse the Rackspace Service Catalog for access:"
-                    " {error}".format(error=e)
+                    "Could not parse the Rackspace Service Catalog for"
+                    " access: {error}".format(error=e)
                 )
             )
 
@@ -259,7 +524,9 @@ class RXTv2Credentials(object):
                     self.auth_payload["id"]
                 )
                 response_data = mapped.handle_scoped_token(
-                    token_ref, PROVIDERS.federation_api, PROVIDERS.identity_api
+                    token_ref,
+                    PROVIDERS.federation_api,
+                    PROVIDERS.identity_api,
                 )
             else:
                 response_data = mapped.handle_unscoped_token(
@@ -290,6 +557,7 @@ class RXTv2Credentials(object):
         :returns: True if the Rackspace Identity API returns a boolean.
         :rtype: bool
         """
+
         service_catalog = RXT_SERVICE_CACHE.get(self.hashed_auth_payload)
         if service_catalog:
             try:

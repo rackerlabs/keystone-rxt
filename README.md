@@ -58,6 +58,7 @@ The configuration file entry will look something like this
 methods = password,token,application_credential
 password = rxt
 ```
+
 > Take note that the `password` method is defined and that the password plugin is set to use `rxt`.
 
 If you have multifactor auth enabled, and want to support users that are running work loads with it
@@ -71,8 +72,18 @@ password = rxt
 totp = rxt
 ```
 
-Yes, effectively one line is all that's required in config (maybe two with totp support). After the
-configuration edit, be sure to restart keystone.
+Yes, just a couple of lines is all that's required in config. After the configuration edit, be sure to restart
+keystone.
+
+#### Rackspace Configurations
+
+The `[rackspace]` section can also be used in your `keystone.conf` to allow you to configure how to anchor on
+roles.
+
+| key               | value |
+| ----------------- | ----- |
+| `role_attribute` | A string option used as an anchor to discover roles attributed to a given user |
+| `role_attribute_enforcement` | When set `true` will limit a users project to only the discovered GUID for the defined `role_attribute` |
 
 ### Identity mapping, project, and domain setup
 
@@ -94,7 +105,7 @@ openstack identity provider create --remote-id rackspace --domain rackspace_clou
 ##### Create the mapping for our identity provider
 
 ``` shell
-openstack mapping create --rules files/mapping.json rackspace_mapping
+openstack mapping create --rules files/mapping.json --schema-version 2.0 rackspace_mapping
 ```
 
 ##### Create the federation protocol
