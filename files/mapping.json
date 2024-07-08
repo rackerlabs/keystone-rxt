@@ -4,32 +4,28 @@
             {
                 "user": {
                     "name": "{0}",
-                    "email": "{1}"
+                    "email": "{1}",
+                    "domain": {
+                        "name": "rackspace_cloud_domain"
+                    }
                 }
             },
             {
                 "projects": [
                     {
-                        "name": "{2}_Production",
+                        "name": "{2}",
+                        "domain": {
+                            "name": "rackspace_cloud_domain"
+                        },
                         "roles": [
                             {
                                 "name": "member"
-                            }
-                        ]
-                    },
-                    {
-                        "name": "{2}_Staging",
-                        "roles": [
+                            },
                             {
-                                "name": "member"
-                            }
-                        ]
-                    },
-                    {
-                        "name": "{2}_Development",
-                        "roles": [
+                                "name": "load-balancer_member"
+                            },
                             {
-                                "name": "member"
+                                "name": "heat_stack_user"
                             }
                         ]
                     }
@@ -49,119 +45,9 @@
             {
                 "type": "RXT_orgPersonType",
                 "any_one_of": [
-                    "admin"
-                ]
-            }
-        ]
-    },
-    {
-        "local": [
-            {
-                "user": {
-                    "name": "{0}",
-                    "email": "{1}"
-                }
-            },
-            {
-                "projects": [
-                    {
-                        "name": "{2}_Production",
-                        "roles": [
-                            {
-                                "name": "reader"
-                            }
-                        ]
-                    },
-                    {
-                        "name": "{2}_Staging",
-                        "roles": [
-                            {
-                                "name": "member"
-                            }
-                        ]
-                    },
-                    {
-                        "name": "{2}_Development",
-                        "roles": [
-                            {
-                                "name": "member"
-                            }
-                        ]
-                    }
-                ]
-            }
-        ],
-        "remote": [
-            {
-                "type": "RXT_UserName"
-            },
-            {
-                "type": "RXT_Email"
-            },
-            {
-                "type": "RXT_TenantName"
-            },
-            {
-                "type": "RXT_orgPersonType",
-                "not_any_of": [
-                    "admin"
-                ]
-            }
-        ]
-    },
-    {
-        "local": [
-            {
-                "user": {
-                    "name": "{0}",
-                    "email": "{1}"
-                }
-            },
-            {
-                "projects": [
-                    {
-                        "name": "{2}_Production",
-                        "roles": [
-                            {
-                                "name": "reader"
-                            }
-                        ]
-                    },
-                    {
-                        "name": "{2}_Staging",
-                        "roles": [
-                            {
-                                "name": "reader"
-                            }
-                        ]
-                    },
-                    {
-                        "name": "{2}_Development",
-                        "roles": [
-                            {
-                                "name": "reader"
-                            }
-                        ]
-                    }
-                ]
-            }
-        ],
-        "remote": [
-            {
-                "type": "RXT_UserName"
-            },
-            {
-                "type": "RXT_Email"
-            },
-            {
-                "type": "RXT_TenantName"
-            },
-            {
-                "type": "RXT_orgPersonType",
-                "not_any_of": [
                     "admin",
-                    "creator",
                     "default",
+                    "user-admin",
                     "tenant-access"
                 ]
             }

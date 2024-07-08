@@ -17,14 +17,24 @@ jobs:
 
     strategy:
       matrix:
-        openstack: [2023.1, 2023.2, 2024.1]
-        distro: [ubuntu_jammy]
+        openstack:
+          - 2023.1
+          - 2023.2
+          - 2024.1
+        distro:
+          - ubuntu_jammy
 
     # Sets the permissions granted to the `GITHUB_TOKEN` for the actions in this job.
     permissions:
       contents: read
       packages: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Dynamically set MY_DATE environment variable
+        run: echo "MY_DATE=$(date +%s)" >> $GITHUB_ENV
       # Uses the `docker/login-action` action to log in to the Container registry registry using the account and password that will publish the packages. Once published, the packages are scoped to the account defined here.
       - name: Log in to the Container registry
         uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
@@ -44,8 +54,11 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
         with:
+          context: .
           push: true
-          tags: "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.openstack }}-${{ matrix.distro }}"
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.openstack }}-${{ matrix.distro }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.openstack }}-${{ matrix.distro }}-${{ env.MY_DATE }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
           build-args: |
