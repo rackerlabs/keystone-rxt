@@ -90,6 +90,19 @@ roles.
 Once the plugin is setup and running, everything will be operating normally. The plugin is passive until
 the Keystone is informed about the identity provider and we have the `rackspace_cloud_domain` created.
 
+#### Mapping Setup
+
+Available environment variables.
+
+| Environment Variable | Explanation |
+| ----------------- | ----- |
+| `RXT_UserName` | Username to be mapped |
+| `RXT_Email` | Email address from the user name |
+| `RXT_DomainID` | Domain ID for the federated assignment |
+| `RXT_TenantName` | Semicolon separated list of tenants mapped to the user |
+| `RXT_TenantID` | Tenant ID for the project |
+| `RXT_orgPersonType` | RBAC association |
+
 ##### Craete the domain
 
 ``` shell
