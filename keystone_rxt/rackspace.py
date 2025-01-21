@@ -222,7 +222,7 @@ class RuleProcessor(mapped.utils.RuleProcessor):
         :param new: New dictionary to merge items from
         :type new: Dictionary
         :param extend: Boolean option to enable or disable extending
-                    iterable arrays.
+                       iterable arrays.
         :type extend: Boolean
         :returns: Dictionary
         """
@@ -270,6 +270,110 @@ class RuleProcessorToHonorDomainOption(
     """
 
 
+def _handle_projects_from_mapping(
+    shadow_projects,
+    idp_domain_id,
+    existing_roles,
+    user,
+    assignment_api,
+    resource_api,
+):
+    for shadow_project in shadow_projects:
+        mapped.configure_project_domain(
+            shadow_project, idp_domain_id, resource_api
+        )
+        try:
+            # Check and see if the project already exists and if it
+            # does not, try to create it.
+            project = resource_api.get_project_by_name(
+                shadow_project["name"], shadow_project["domain"]["id"]
+            )
+        except exception.ProjectNotFound:
+            LOG.info(
+                "Project %(project_name)s does not exist. It will be "
+                "automatically provisioning for user %(user_id)s.",
+                {
+                    "project_name": shadow_project["name"],
+                    "user_id": user["id"],
+                },
+            )
+            project_ref = {
+                "id": mapped.uuid.uuid4().hex,
+                "name": shadow_project["name"],
+                "domain_id": shadow_project["domain"]["id"],
+            }
+            project = resource_api.create_project(
+                project_ref["id"], project_ref
+            )
+        shadow_roles = shadow_project["roles"]
+        for shadow_role in shadow_roles:
+            assignment_api.create_grant(
+                existing_roles[shadow_role["name"]]["id"],
+                user_id=user["id"],
+                project_id=project["id"],
+            )
+        # Run project update to ensure that the project has the correct tags
+        # and description.
+        update_needed = False
+        for shadow_tag in shadow_project.get("tags", list()):
+            shadow_tag = shadow_tag.get("project_tag")
+            if shadow_tag and shadow_tag not in project["tags"]:
+                project["tags"].append(shadow_tag)
+                update_needed = True
+
+        description = shadow_project.get("description", "").strip()
+        if description and project.get("description") != description:
+            project["description"] = description
+            update_needed = True
+
+        metadata = shadow_project.get("metadata", list())
+        for item in metadata:
+            if item['key'] not in project:
+                project[item['key']] = item['value']
+                update_needed = True
+
+        if update_needed:
+            resource_api.update_project(
+                project_id=project["id"], project=project
+            )
+
+
+# NOTE(cloudnull): Adds tag and description support to the project mapping.
+mapped.handle_projects_from_mapping = _handle_projects_from_mapping
+
+# NOTE(cloudnull): Ensures that the Rackspace plugin is permits the use of tags
+#                  and a description within PROJECTS_SCHEMA_2_0.
+mapped.utils.PROJECTS_SCHEMA_2_0["items"]["properties"]["tags"] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "required": ["project_tag"],
+        "properties": {
+            "project_tag": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+}
+mapped.utils.PROJECTS_SCHEMA_2_0["items"]["properties"]["metadata"] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "required": ["key", "value"],
+        "properties": {
+            "key": {"type": "string"},
+            "value": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+}
+mapped.utils.PROJECTS_SCHEMA_2_0["items"]["properties"]["description"] = {
+    "type": "string"
+}
+mapped.utils.IDP_ATTRIBUTE_MAPPING_SCHEMA_2_0["properties"]["rules"]["items"][
+    "properties"
+]["local"]["items"]["properties"][
+    "projects"
+] = mapped.utils.PROJECTS_SCHEMA_2_0
 # NOTE(cloudnull): This is to ensure that the RuleProcessor is used for the
 #                  1.0 schema and the RuleProcessorToHonorDomainOption is
 #                  used for the 2.0 schema when running with the rxt auth
