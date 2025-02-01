@@ -298,7 +298,9 @@ def _handle_projects_from_mapping(
                 },
             )
             project_ref = {
-                "id": mapped.uuid.uuid4().hex,
+                "id": hashlib.sha224(
+                    shadow_project["name"].encode("utf-8")
+                ).hexdigest(),
                 "name": shadow_project["name"],
                 "domain_id": shadow_project["domain"]["id"],
             }
@@ -328,8 +330,8 @@ def _handle_projects_from_mapping(
 
         metadata = shadow_project.get("metadata", list())
         for item in metadata:
-            if item['key'] not in project:
-                project[item['key']] = item['value']
+            if item["key"] not in project:
+                project[item["key"]] = item["value"]
                 update_needed = True
 
         if update_needed:
