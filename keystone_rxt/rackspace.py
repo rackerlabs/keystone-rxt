@@ -298,9 +298,9 @@ def _handle_projects_from_mapping(
                 },
             )
             project_ref = {
-                "id": hashlib.sha224(
+                "id": hashlib.shake_256(
                     shadow_project["name"].encode("utf-8")
-                ).hexdigest(),
+                ).hexdigest(length=16),
                 "name": shadow_project["name"],
                 "domain_id": shadow_project["domain"]["id"],
             }
@@ -416,12 +416,12 @@ class RXTv2Credentials(object):
         """
 
         self.auth_payload = auth_payload
-        self.hashed_auth_payload = hashlib.sha224(
+        self.hashed_auth_payload = hashlib.shake_256(
             json.dumps(self.auth_payload, sort_keys=True).encode("utf-8")
-        ).hexdigest()
-        self.hashed_auth_user = hashlib.sha224(
+        ).hexdigest(length=16)
+        self.hashed_auth_user = hashlib.shake_256(
             self._username.encode("utf-8")
-        ).hexdigest()
+        ).hexdigest(length=16)
         self.session_id = self._sessionID
 
     def __exit__(self, *args, **kwargs):
