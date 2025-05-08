@@ -18,7 +18,6 @@ import hashlib
 import json
 
 import keystone.conf.utils
-import keystone.exception
 import requests
 from oslo_log import log
 import flask
@@ -74,6 +73,122 @@ If disabled and no role is found, the plugin will fall back to using the DDI.
 keystone.conf.CONF.register_opts(
     [ROLE_ATTRIBUTE, ROLE_ATTRIBUTE_ENFORCEMENT], group="rackspace"
 )
+
+# NOTE(cloudnull): The roles defined here are the roles that are
+#                  expected to be returned from the Rackspace Identity
+#                  API. The roles are used to map the user to the
+#                  appropriate project and role.
+RXT_ROLES = {
+    "autoscale": {
+        "admin": "member",
+        "creator": "creator",
+        "default": None,
+        "observer": "reader",
+    },
+    "bigdata": {
+        "admin": "member",
+        "creator": "creator",
+        "default": None,
+        "observer": "reader",
+    },
+    "cbs": {
+        "admin": "member",
+        "creator": "creator",
+        "default": None,
+        "observer": "reader",
+    },
+    "cdb": {
+        "admin": "member",
+        "creator": "creator",
+        "default": None,
+        "observer": "reader",
+    },
+    "cdn": {
+        "admin": "member",
+        "creator": "creator",
+        "default": None,
+        "observer": "reader",
+    },
+    "cloudBackup": {
+        "admin": "member",
+        "creator": "creator",
+        "default": None,
+        "observer": "reader",
+    },
+    "cloudfeeds": {
+        "admin": "member",
+        "creator": "creator",
+        "default": None,
+        "observer": "reader",
+    },
+    "cloudImages": {
+        "admin": "member",
+        "creator": "creator",
+        "default": None,
+        "observer": "reader",
+    },
+    "cloudNetworks": {
+        "admin": "network_member",
+        "creator": "network_creator",
+        "default": None,
+        "observer": "network_observer",
+    },
+    "compute": {
+        "admin": "member",
+        "creator": "creator",
+        "default": None,
+        "observer": "reader",
+    },
+    "dnsaas": {
+        "admin": "member",
+        "creator": "creator",
+        "default": None,
+        "observer": "reader",
+    },
+    "heat": {
+        "admin": "heat_stack_user",
+        "creator": "heat_stack_user",
+        "default": None,
+        "observer": "heat_stack_user",
+    },
+    "identity": {
+        "admin": "reader",
+        "creator": "reader",
+        "default": "reader",
+        "tenant-access": "reader",
+        "observer": "reader",
+    },
+    "LBaaS": {
+        "admin": "load-balancer_member",
+        "creator": "load-balancer_member",
+        "default": None,
+        "observer": "load-balancer_observer",
+    },
+    "monitoring": {
+        "admin": "member",
+        "creator": "creator",
+        "default": None,
+        "observer": "reader",
+    },
+    "nova": {
+        "admin": "member",
+        "creator": "creator",
+        "default": None,
+        "observer": "reader",
+    },
+    "object-store": {
+        "admin": "member",
+        "creator": "creator",
+        "default": None,
+        "observer": "reader",
+    },
+    "rms": {
+        "admin": "member",
+        "creator": "creator",
+        "default": None,
+        "observer": "reader",
+    },
+}
 
 
 class RuleProcessor(mapped.utils.RuleProcessor):
@@ -307,6 +422,7 @@ def _handle_projects_from_mapping(
             project = resource_api.create_project(
                 project_ref["id"], project_ref
             )
+
         shadow_roles = shadow_project["roles"]
         for shadow_role in shadow_roles:
             assignment_api.create_grant(
@@ -314,6 +430,21 @@ def _handle_projects_from_mapping(
                 user_id=user["id"],
                 project_id=project["id"],
             )
+
+        # NOTE(cloudnull): Dynmically add roles to the user for a project.
+        #                  This is used to ensure that the user has the
+        #                  correct roles for the project based on what is
+        #                  defined in the mapping, which is retruned from
+        #                  the IdP.
+        req_roles = flask.request.environ.get("RXT_orgPersonType", "reader")
+        for role in req_roles.split(";"):
+            if role in existing_roles:
+                assignment_api.create_grant(
+                    existing_roles[role]["id"],
+                    user_id=user["id"],
+                    project_id=project["id"],
+                )
+
         # Run project update to ensure that the project has the correct tags
         # and description.
         update_needed = False
@@ -568,19 +699,46 @@ class RXTv2Credentials(object):
             access = service_catalog["access"]
             access_user = access["user"]
             access_token = access["token"]
-            access_user_roles = set()
+            access_roles = {
+                k.lower(): v["default"]
+                for k, v in RXT_ROLES.items()
+                if v["default"] is not None
+            }
 
             for role in service_catalog["access"]["user"]["roles"]:
-                rxt_tenantId = role.get("tenantId")
                 try:
-                    if access_token["tenant"]["id"] in rxt_tenantId:
-                        access_user_roles.add(role["name"].split(":")[-1])
-                    role, value = rxt_tenantId.split(":")
-                except (ValueError, TypeError):
+                    rxt_role, rxt_value = role["name"].split(":")
+                    rxt_role = rxt_role.lower()
+                    rxt_value = rxt_value.lower()
+                except (ValueError, KeyError, AttributeError) as e:
+                    LOG.debug(
+                        "Could not parse the role name and value: {error}".format(
+                            error=e
+                        )
+                    )
                     continue
                 else:
-                    if role.startswith(role_attribute):
-                        access_projects.append(value)
+                    rxt_role_mapping = RXT_ROLES.get(rxt_role, dict())
+                    rxt_role_mapped_value = rxt_role_mapping.get(rxt_value)
+                    if rxt_role_mapped_value:
+                        # NOTE(cloudnull): The compute role is mapped to the
+                        #                  nova role for backwards compatibility.
+                        if rxt_role == "nova":
+                            access_roles["compute"] = rxt_role_mapped_value
+                        access_roles[rxt_role] = rxt_role_mapped_value
+
+                try:
+                    role_name, project_value = role["tenantId"].split(":")
+                except (ValueError, KeyError) as e:
+                    LOG.debug(
+                        "Could not parse the role name and project value: {error}".format(
+                            error=e
+                        )
+                    )
+                    continue
+                else:
+                    if role_name.startswith(role_attribute):
+                        access_projects.append(project_value)
 
             access_projects = sorted(access_projects)
             if not keystone.conf.CONF.rackspace.role_attribute_enforcement:
@@ -588,6 +746,11 @@ class RXTv2Credentials(object):
                     "{tenant}_Flex".format(tenant=access_token["tenant"]["id"])
                 )
 
+            LOG.debug(
+                "Found access projects: {access_projects}".format(
+                    access_projects=access_projects
+                )
+            )
             if len(access_projects) < 1:
                 raise exception.Unauthorized(
                     _(
@@ -595,7 +758,11 @@ class RXTv2Credentials(object):
                         " attribute to continue."
                     )
                 )
-
+            LOG.debug(
+                "Access Roles Set for user {user}: {access_roles}".format(
+                    user=access_user["name"], access_roles=access_roles
+                )
+            )
             tenant_ids = ";".join(access_projects)
             self._set_federation_env(
                 username=access_user["name"],
@@ -603,9 +770,14 @@ class RXTv2Credentials(object):
                 domain_id=access_user["RAX-AUTH:domainId"],
                 tenant_name=tenant_ids,
                 tenant_id=tenant_ids,
-                org_person_type=";".join(sorted(access_user_roles)),
+                org_person_type=";".join(set(access_roles.values())),
             )
         except KeyError as e:
+            LOG.debug(
+                "Failed to parse the Rackspace Service Catalog: {error}".format(
+                    error=e
+                )
+            )
             raise exception.Unauthorized(
                 _(
                     "Could not parse the Rackspace Service Catalog for"
