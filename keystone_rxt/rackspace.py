@@ -156,6 +156,7 @@ RXT_ROLES = {
         "creator": "reader",
         "default": "reader",
         "tenant-access": "reader",
+        "user-admin": "member",
         "observer": "reader",
     },
     "LBaaS": {
@@ -700,32 +701,47 @@ class RXTv2Credentials(object):
             access_user = access["user"]
             access_token = access["token"]
             access_roles = {
-                k.lower(): v["default"]
+                k: v["default"]
                 for k, v in RXT_ROLES.items()
                 if v["default"] is not None
             }
 
+            is_user_admin = False
             for role in service_catalog["access"]["user"]["roles"]:
-                try:
-                    rxt_role, rxt_value = role["name"].split(":")
-                    rxt_role = rxt_role.lower()
-                    rxt_value = rxt_value.lower()
-                except (ValueError, KeyError, AttributeError) as e:
-                    LOG.debug(
-                        "Could not parse the role name and value: {error}".format(
-                            error=e
+                if not is_user_admin:
+                    try:
+                        rxt_role, rxt_value = role["name"].split(":")
+                    except (ValueError, KeyError, AttributeError) as e:
+                        LOG.debug(
+                            "Could not parse the role name and value: {error}".format(
+                                error=e
+                            )
                         )
-                    )
-                    continue
-                else:
-                    rxt_role_mapping = RXT_ROLES.get(rxt_role, dict())
-                    rxt_role_mapped_value = rxt_role_mapping.get(rxt_value)
-                    if rxt_role_mapped_value:
-                        # NOTE(cloudnull): The compute role is mapped to the
-                        #                  nova role for backwards compatibility.
-                        if rxt_role == "nova":
-                            access_roles["compute"] = rxt_role_mapped_value
-                        access_roles[rxt_role] = rxt_role_mapped_value
+                        continue
+                    else:
+                        if (
+                            rxt_role == "identity"
+                            and rxt_value == "user-admin"
+                        ):
+                            access_roles = {
+                                k: v["admin"]
+                                for k, v in RXT_ROLES.items()
+                                if v["admin"] is not None
+                            }
+                            is_user_admin = True
+                        else:
+                            rxt_role_mapping = RXT_ROLES.get(rxt_role, dict())
+                            rxt_role_mapped_value = rxt_role_mapping.get(
+                                rxt_value
+                            )
+                            if rxt_role_mapped_value:
+                                # NOTE(cloudnull): The compute role is mapped to the
+                                #                  nova role for backwards compatibility.
+                                if rxt_role == "nova":
+                                    access_roles["compute"] = (
+                                        rxt_role_mapped_value
+                                    )
+                                access_roles[rxt_role] = rxt_role_mapped_value
 
                 try:
                     role_name, project_value = role["tenantId"].split(":")
@@ -773,7 +789,7 @@ class RXTv2Credentials(object):
                 org_person_type=";".join(set(access_roles.values())),
             )
         except KeyError as e:
-            LOG.debug(
+            LOG.error(
                 "Failed to parse the Rackspace Service Catalog: {error}".format(
                     error=e
                 )
