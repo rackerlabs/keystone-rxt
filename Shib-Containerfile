@@ -1,0 +1,8 @@
+# syntax=docker/dockerfile:1
+
+FROM ubuntu:24.04
+
+RUN export DEBIAN_FRONTEND=noninteractive && apt update && apt install -y shibboleth-sp-utils && apt clean && rm -rf /var/lib/apt/lists/* /tmp/*.deb
+WORKDIR /var/run/shibboleth
+RUN chown -R _shibd:_shibd /var/run/shibboleth
+ENV LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/shibboleth

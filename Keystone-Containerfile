@@ -10,3 +10,4 @@ RUN find /var/lib/openstack -regex '^.*\(__pycache__\|\.py[co]\)$' -delete
 
 FROM openstackhelm/keystone:${VERSION}
 COPY --from=build /var/lib/openstack/. /var/lib/openstack/
+RUN export DEBIAN_FRONTEND=noninteractive && apt update && apt install -y xmlsec1 libapache2-mod-shib && apt clean && rm -rf /var/lib/apt/lists/* /tmp/*.deb
