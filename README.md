@@ -72,6 +72,17 @@ password = rxt
 totp = rxt
 ```
 
+If you are using the `saml2` federation protocol, you will also need to add the `saml2` plugin to your
+`keystone.conf` file.
+
+``` conf
+[auth]
+methods = password,token,application_credential,saml2
+password = rxt
+totp = rxt
+saml2 = rxt
+```
+
 Yes, just a couple of lines is all that's required in config. After the configuration edit, be sure to restart
 keystone.
 
@@ -103,13 +114,30 @@ Available environment variables.
 | `RXT_TenantID` | Tenant ID for the project |
 | `RXT_orgPersonType` | RBAC association |
 
-##### Craete the domain
+#### SAML Mapping Setup
+
+Available environment variables.
+
+| Environment Variable | Explanation |
+| ----------------- | ----- |
+| `REMOTE_ACCOUNT_NAME` | Account Name |
+| `REMOTE_AUTH_TOKEN` | Account Auth Token |
+| `REMOTE_AUTH_URL` | Auth URL |
+| `REMOTE_DDI` | Account DDI |
+| `REMOTE_DOMAIN` | Account Domain |
+| `REMOTE_SCOPED_TOKEN` | Scoped Auth Token |
+| `REMOTE_SESSION_CREATION` | Session creation time |
+| `REMOTE_EMAIL` | Remote user Email Address |
+| `uid` | Remote user ID |
+| `REMOTE_USERNAME` | Remote Username |
+
+##### Create the domain
 
 ``` shell
 openstack domain create rackspace_cloud_domain
 ```
 
-##### Create the identity provider
+#### Create the identity provider
 
 ``` shell
 openstack identity provider create --remote-id rackspace --domain rackspace_cloud_domain rackspace
@@ -132,7 +160,7 @@ openstack federation protocol create rackspace --mapping rackspace_mapping --ide
 Using the plugin is no different that a typical day in the cloud. Simply authenticate using your favorite method,
 just make sure you include the `rackspace_cloud_domain` domain.
 
-##### Authentication using `openstacksdk`
+### Authentication using `openstacksdk`
 
 This setup requires a federated token to work. The clouds yaml will not pull a token by default.
 
@@ -217,4 +245,54 @@ authenticate to the various APIs supported by our service catalog.
 
 ``` shell
 curl -H "Accept: application/json" -H "X-Auth-Token: $OS_TOKEN" http://localhost:9292/v2/images
+```
+
+#### Create the SAML identity provider
+
+``` shell
+openstack --os-cloud default identity provider create \
+          --remote-id "https://login.rackspace.com" \
+          --domain rackspace_cloud_domain \
+          Rackspace-Federation
+```
+
+> The `keystone-rxt` plugin will use the provider name `Rackspace-Federation` to identify the SAML identity provider.
+
+##### Create the SAML mapping for our identity provider
+
+``` shell
+openstack --os-cloud default mapping create \
+          --rules files/rackspace-saml-mapping.json \
+          --schema-version 2.0 \
+          saml_mapping
+```
+
+##### Create the SAML federation protocol
+
+``` shell
+openstack --os-cloud default federation protocol create saml2 \
+          --mapping saml_mapping \
+          --identity-provider Rackspace-Federation
+```
+
+Once the SAML identity provider is ready, and deployed; you can use the SAML authentication via WebSSO.
+
+To use the openstack API, it is required to first create an application credential for the user within the UI. This will
+allow the user to authenticate using the SAML identity provider and then use the application credential to
+authenticate to the OpenStack API.
+
+### Authentication using `openstacksdk` and Application Credentials
+
+This setup requires a federated token to work. The clouds yaml will not pull a token by default.
+
+``` yaml
+  rxt-application-credential:
+    auth_type: v3applicationcredential
+    auth:
+      auth_url: http://localhost:5000/v3
+      application_credential_id: ${APP_CRED_ID}
+      application_credential_secret: ${APP_CRED_SECRET}
+    region_name: RegionOne
+    interface: internal
+    identity_api_version: "3"
 ```
