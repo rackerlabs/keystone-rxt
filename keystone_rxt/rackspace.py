@@ -17,6 +17,8 @@ import re
 import hashlib
 import json
 
+import urllib.parse as urlparse
+
 import keystone.conf.utils
 import requests
 from oslo_log import log
@@ -178,7 +180,7 @@ RXT_ROLES = {
         "observer": "reader",
     },
     "object-store": {
-        "admin": "member",
+        "admin": "creator",
         "creator": "creator",
         "default": None,
         "observer": "reader",
@@ -269,16 +271,22 @@ class RuleProcessor(mapped.utils.RuleProcessor):
         # semi-colon to indicate multiple values, i.e. groups.
         # This will create a new dictionary where the values are arrays, and
         # any multiple values are stored in the arrays.
-        LOG.debug("assertion data: %s", assertion_data)
+        LOG.debug(
+            _(
+                "assertion data: {assertion_data}".format(
+                    assertion_data=assertion_data
+                )
+            )
+        )
         assertion = {
             n: v.split(";")
             for n, v in assertion_data.items()
             if isinstance(v, str)
         }
-        LOG.debug("assertion: %s", assertion)
+        LOG.debug(_("assertion: {assertion}".format(assertion=assertion)))
         identity_values = []
 
-        LOG.debug("rules: %s", self.rules)
+        LOG.debug(_("rules: {rules}".format(rules=self.rules)))
         for rule in self.rules:
             direct_maps = self._verify_all_requirements(
                 rule["remote"], assertion
@@ -295,7 +303,11 @@ class RuleProcessor(mapped.utils.RuleProcessor):
             if not direct_maps:
                 identity_values += rule["local"]
             else:
-                LOG.debug("original_direct_maps: %s", direct_maps)
+                LOG.debug(
+                    "original_direct_maps: {direct_maps}".format(
+                        direct_maps=direct_maps
+                    )
+                )
                 new_direct_maps = list()
                 for map_index, map_value in enumerate(direct_maps):
                     if isinstance(map_value, list):
@@ -306,7 +318,13 @@ class RuleProcessor(mapped.utils.RuleProcessor):
                             for item in _copy_direct_maps:
                                 _direct_map.add([item])
                             else:
-                                LOG.debug("new_direct_map: %s", _direct_map)
+                                LOG.debug(
+                                    _(
+                                        "new_direct_map: {direct_map}".format(
+                                            direct_map=_direct_map
+                                        )
+                                    )
+                                )
                                 new_direct_maps.append(_direct_map)
 
                 for local in rule["local"]:
@@ -324,10 +342,22 @@ class RuleProcessor(mapped.utils.RuleProcessor):
                         )
                         identity_values.append(new_local)
 
-        LOG.debug("identity_values: %s", identity_values)
+        LOG.debug(
+            _(
+                "identity_values: {identity_values}".format(
+                    identity_values=identity_values
+                )
+            )
+        )
         mapped_properties = self._transform(identity_values)
 
-        LOG.debug("mapped_properties: %s", mapped_properties)
+        LOG.debug(
+            _(
+                "mapped_properties: {mapped_properties}".format(
+                    mapped_properties=mapped_properties
+                )
+            )
+        )
         return mapped_properties
 
     def _merge_dict(self, base, new, extend=True):
@@ -524,7 +554,114 @@ mapped.utils.IDP_ATTRIBUTE_MAPPING_SCHEMAS = {
 }
 
 
-class RXTv2Credentials(object):
+class RXTv2BaseAuth(object):
+    """Base class for Rackspace v2 authentication."""
+
+    session = requests.Session()
+    session_id = None
+
+    def __exit__(self, *args, **kwargs):
+        """Close the session.
+
+        This method is used to close the session after the authentication
+        method has completed.
+        """
+
+        self.session.close()
+        LOG.debug(_("Rackspace IDP Login complete, returning to OS"))
+
+    @staticmethod
+    def _role_parser(role_list):
+        access_projects = set()
+        role_attribute = keystone.conf.CONF.rackspace.role_attribute
+        access_roles = {
+            k: v["default"]
+            for k, v in RXT_ROLES.items()
+            if v["default"] is not None
+        }
+
+        is_user_admin = False
+        for role in role_list:
+            if not is_user_admin:
+                try:
+                    rxt_role, rxt_value = role["name"].split(":")
+                except (ValueError, KeyError, AttributeError) as e:
+                    LOG.debug(
+                        "Could not parse the role name and value: {error}".format(
+                            error=e
+                        )
+                    )
+                    continue
+                else:
+                    if rxt_role == "identity" and rxt_value == "user-admin":
+                        access_roles = {
+                            k: v["admin"]
+                            for k, v in RXT_ROLES.items()
+                            if v["admin"] is not None
+                        }
+                        is_user_admin = True
+                    else:
+                        rxt_role_mapping = RXT_ROLES.get(rxt_role, dict())
+                        rxt_role_mapped_value = rxt_role_mapping.get(rxt_value)
+                        if rxt_role_mapped_value:
+                            # NOTE(cloudnull): The compute role is mapped to the
+                            #                  nova role for backwards compatibility.
+                            if rxt_role == "nova":
+                                access_roles["compute"] = rxt_role_mapped_value
+                            access_roles[rxt_role] = rxt_role_mapped_value
+
+            try:
+                role_name, project_value = role["tenantId"].split(":")
+            except (ValueError, KeyError) as e:
+                LOG.debug(
+                    "Could not parse the role name and project value: {error}".format(
+                        error=e
+                    )
+                )
+                continue
+            else:
+                if role_name.startswith(role_attribute):
+                    access_projects.add(project_value)
+
+        return list(access_projects), access_roles
+
+    def _return_auth_handler(
+        self, status=True, response_body=None, response_data=None
+    ):
+        """Return the auth handler response.
+
+        Using the provided auth payload, return the auth handler response.
+        This will work for both scoped and unscoped tokens.
+        """
+
+        if status is True:
+            if "id" in self.auth_payload:
+                token_ref = PROVIDERS.token_provider_api.validate_token(
+                    self.auth_payload["id"]
+                )
+                response_data = mapped.handle_scoped_token(
+                    token_ref,
+                    PROVIDERS.federation_api,
+                    PROVIDERS.identity_api,
+                )
+            else:
+                response_data = mapped.handle_unscoped_token(
+                    self.auth_payload,
+                    PROVIDERS.resource_api,
+                    PROVIDERS.federation_api,
+                    PROVIDERS.identity_api,
+                    PROVIDERS.assignment_api,
+                    PROVIDERS.role_api,
+                )
+
+        return base.AuthHandlerResponse(
+            status=status,
+            response_body=response_body,
+            response_data=response_data,
+        )
+
+
+class RXTv2Credentials(RXTv2BaseAuth):
     """Return an authenticate object based on the provided auth payload.
 
     Check the value type of the provided auth payload and determine the
@@ -534,8 +671,6 @@ class RXTv2Credentials(object):
     hash_types = [r"^[a-fA-F0-9]{%s}$" % i for i in [32, 40, 64]]
     rxt_auth_payload = None
     rxt_headers = dict()
-    session = requests.Session()
-    session_id = None
 
     def __init__(self, auth_payload):
         """Initialize the RXTv2Credentials object.
@@ -555,16 +690,6 @@ class RXTv2Credentials(object):
             self._username.encode("utf-8")
         ).hexdigest(length=16)
         self.session_id = self._sessionID
-
-    def __exit__(self, *args, **kwargs):
-        """Close the session.
-
-        This method is used to close the session after the authentication
-        method has completed.
-        """
-
-        self.session.close()
-        LOG.debug(_("Rackspace IDP Login complete, returning to OS"))
 
     @property
     def _sessionID(self):
@@ -693,69 +818,13 @@ class RXTv2Credentials(object):
         the method will deny access.
         """
 
-        role_attribute = keystone.conf.CONF.rackspace.role_attribute
-        access_projects = list()
+        access_projects, access_roles = self._role_parser(
+            service_catalog["access"]["user"]["roles"]
+        )
 
         try:
-            access = service_catalog["access"]
-            access_user = access["user"]
-            access_token = access["token"]
-            access_roles = {
-                k: v["default"]
-                for k, v in RXT_ROLES.items()
-                if v["default"] is not None
-            }
-
-            is_user_admin = False
-            for role in service_catalog["access"]["user"]["roles"]:
-                if not is_user_admin:
-                    try:
-                        rxt_role, rxt_value = role["name"].split(":")
-                    except (ValueError, KeyError, AttributeError) as e:
-                        LOG.debug(
-                            "Could not parse the role name and value: {error}".format(
-                                error=e
-                            )
-                        )
-                        continue
-                    else:
-                        if (
-                            rxt_role == "identity"
-                            and rxt_value == "user-admin"
-                        ):
-                            access_roles = {
-                                k: v["admin"]
-                                for k, v in RXT_ROLES.items()
-                                if v["admin"] is not None
-                            }
-                            is_user_admin = True
-                        else:
-                            rxt_role_mapping = RXT_ROLES.get(rxt_role, dict())
-                            rxt_role_mapped_value = rxt_role_mapping.get(
-                                rxt_value
-                            )
-                            if rxt_role_mapped_value:
-                                # NOTE(cloudnull): The compute role is mapped to the
-                                #                  nova role for backwards compatibility.
-                                if rxt_role == "nova":
-                                    access_roles["compute"] = (
-                                        rxt_role_mapped_value
-                                    )
-                                access_roles[rxt_role] = rxt_role_mapped_value
-
-                try:
-                    role_name, project_value = role["tenantId"].split(":")
-                except (ValueError, KeyError) as e:
-                    LOG.debug(
-                        "Could not parse the role name and project value: {error}".format(
-                            error=e
-                        )
-                    )
-                    continue
-                else:
-                    if role_name.startswith(role_attribute):
-                        access_projects.append(project_value)
-
+            access_user = service_catalog["access"]["user"]
+            access_token = service_catalog["access"]["token"]
             access_projects = sorted(access_projects)
             if not keystone.conf.CONF.rackspace.role_attribute_enforcement:
                 access_projects.append(
@@ -801,43 +870,6 @@ class RXTv2Credentials(object):
                 )
             )
 
-    def _return_auth_handler(
-        self, status=True, response_body=None, response_data=None
-    ):
-        """Return the auth handler response.
-
-        Using the provided auth payload, return the auth handler response.
-        This will work for both scoped and unscoped tokens.
-        """
-
-        if status is True:
-            self.auth_payload["identity_provider"] = "rackspace"
-            self.auth_payload["protocol"] = "rackspace"
-            if "id" in self.auth_payload:
-                token_ref = PROVIDERS.token_provider_api.validate_token(
-                    self.auth_payload["id"]
-                )
-                response_data = mapped.handle_scoped_token(
-                    token_ref,
-                    PROVIDERS.federation_api,
-                    PROVIDERS.identity_api,
-                )
-            else:
-                response_data = mapped.handle_unscoped_token(
-                    self.auth_payload,
-                    PROVIDERS.resource_api,
-                    PROVIDERS.federation_api,
-                    PROVIDERS.identity_api,
-                    PROVIDERS.assignment_api,
-                    PROVIDERS.role_api,
-                )
-
-        return base.AuthHandlerResponse(
-            status=status,
-            response_body=response_body,
-            response_data=response_data,
-        )
-
     def get_rxt_auth(self, auth_data, auth_type):
         """Authenticate using the Rackspace Identity API.
 
@@ -853,6 +885,9 @@ class RXTv2Credentials(object):
         """
 
         service_catalog = RXT_SERVICE_CACHE.get(self.hashed_auth_payload)
+        self.auth_payload["identity_provider"] = "rackspace"
+        self.auth_payload["protocol"] = "rackspace"
+
         if service_catalog:
             try:
                 expires = service_catalog["access"]["token"]["expires"]
@@ -1102,6 +1137,180 @@ class RXTTOTPAuth(RXTv2Credentials):
             )
 
 
+class RXTSAMLAuth(RXTv2BaseAuth):
+    """Rackspace TOTP Authentication."""
+
+    def __init__(self, auth_payload):
+        """Initialize the RXTv2Credentials object.
+
+        This method is used to initialize the RXTv2Credentials object. The
+        method will hash the auth payload and username for use in caching
+        and session headers.
+
+        :param dict auth_payload: The auth payload to be used for authentication.
+        """
+
+        self.auth_payload = auth_payload
+
+    def __enter__(self):
+        """Return the correct authentication method.
+
+        This method is used to return the authentication method which is
+        evaluating the SAML assertion in the auth payload.
+        """
+
+        LOG.debug(_("Rackspace IDP Login started for SAML"))
+        return self
+
+    @staticmethod
+    def _return_auth_url(ddi=None):
+        """Return the Rackspace authentication URL.
+
+        Inspect the ddi and return the correct Rackspace authentication URL.
+        If the ddi is not provided, the method will return the REMOTE_AUTH_URL
+        from the Flask request environment.
+
+        :param str ddi: The user ID to be used for determining the auth URL.
+        :type ddi: int, str, or None
+        :returns: The Rackspace authentication URL.
+        :rtype: str
+        """
+
+        ddi = str(ddi)
+        if len(ddi) <= 7:
+            return "https://identity.api.rackspacecloud.com"
+        elif len(ddi) >= 8 or ddi.startswith("100"):
+            return "https://lon.identity.api.rackspacecloud.com"
+        else:
+            return flask.request.environ.get("REMOTE_AUTH_URL")
+
+    def rxt_auth(self, auth_payload=None):
+        """Authenticate using the Rackspace Identity API.
+
+        This method is used to query the Rackspace role assigment API.
+        The method will return an auth handler responce.
+
+        The response will contain the role assignments for the user
+        and the roles that are available to the user. The response will
+        look like the following:
+        >>> {
+        ...   "RAX-AUTH:roleAssignments": {
+        ...     "tenantAssignments": [
+        ...       {
+        ...         "onRoleName": "identity:user-admin",
+        ...         "sources": [
+        ...           {
+        ...             "sourceId": "12345678901234567890",
+        ...             "sourceType": "USER",
+        ...             "forTenants": [
+        ...               "MossoCloudFS_1234567890",
+        ...               "os_flex:00000000-0000-0000-0000-000000000000",
+        ...               "1234567890"
+        ...             ],
+        ...             "assignmentType": "DOMAIN"
+        ...           }
+        ...         ],
+        ...         "forTenants": [
+        ...           "MossoCloudFS_1234567890",
+        ...           "os_flex:00000000-0000-0000-0000-000000000000",
+        ...           "1234567890"
+        ...         ],
+        ...         "onRole": "3"
+        ...       }
+        ...     ]
+        ...   }
+
+        The roles names will be assigned to projects based on the `forTenants`
+        property.
+
+        :param dict auth_payload: The auth payload to be used for authentication.
+        :returns: An auth handler response if the Rackspace Identity API
+                  returns a boolean
+        :rtype: keystone.auth.plugins.base.AuthHandlerResponse
+        """
+
+        LOG.debug(
+            _(
+                "Rackspace IDP SAML2 Login started with environment: {flask_env}".format(
+                    flask_env=flask.request.environ
+                )
+            )
+        )
+
+        try:
+            uid = flask.request.environ["uid"]
+            auth_url = urlparse.urljoin(
+                self._return_auth_url(ddi=flask.request.environ["REMOTE_DDI"]),
+                f"v2.0/users/{uid}/RAX-AUTH/roles",
+            )
+            LOG.debug(
+                _(
+                    "Using Rackspace SAML2 Authentication URL: {auth_url}".format(
+                        auth_url=auth_url
+                    )
+                )
+            )
+            r = self.session.get(
+                auth_url,
+                headers={
+                    "X-Auth-Token": flask.request.environ["REMOTE_AUTH_TOKEN"],
+                    "Accept": "application/json",
+                },
+            )
+            r.raise_for_status()
+            role_assignment = r.json()
+
+            LOG.debug(
+                _(
+                    "Rackspace SAML2 Authentication response: {role_assignment}".format(
+                        role_assignment=role_assignment
+                    )
+                )
+            )
+
+            role_list = list()
+            for assignment in role_assignment["RAX-AUTH:roleAssignments"][
+                "tenantAssignments"
+            ]:
+                role_item = dict(name=assignment["onRoleName"])
+                for source in assignment["sources"]:
+                    for tenant in source.get("forTenants"):
+                        if tenant.startswith("os_flex"):
+                            role_item["tenantId"] = tenant
+                            role_list.append(role_item)
+
+            if role_list:
+                access_projects, access_roles = self._role_parser(
+                    role_list=role_list
+                )
+                LOG.debug(
+                    _(
+                        "Access Projects: {access_projects}".format(
+                            access_projects=access_projects
+                        )
+                    )
+                )
+                LOG.debug(
+                    _(
+                        "Access Roles: {access_roles}".format(
+                            access_roles=access_roles
+                        )
+                    )
+                )
+                flask.request.environ["REMOTE_PROJECTS"] = ";".join(
+                    access_projects
+                )
+                flask.request.environ["RXT_orgPersonType"] = ";".join(
+                    set(access_roles.values())
+                )
+        except (ValueError, requests.HTTPError):
+            raise exception.Unauthorized(
+                _("Failed to authenticate using the Rackspace Identity API")
+            )
+        else:
+            return self._return_auth_handler(status=True)
+
+
 class RXTPassword(password.Password):
     """Rackspace Authentication.
 
@@ -1150,3 +1359,39 @@ class RXTTOTP(totp.TOTP):
             LOG.debug(_("Using Rackspace Global Authentication TOTP"))
             with RXTTOTPAuth(auth_payload=auth_payload) as rxt:
                 return rxt.rxt_auth()
+
+
+class RXTSAML2(mapped.Mapped):
+    """Rackspace SAML Authentication.
+
+    This class is used to authenticate using the Rackspace Identity API
+    with SAML. The class will attempt to authenticate using the Rackspace
+    Identity API with the provided MFA auth payload.
+    """
+
+    def authenticate(self, auth_payload):
+        """Return a signed request with an access key into a keystone token."""
+
+        try:
+            assert auth_payload["identity_provider"] == "Rackspace-Federation"
+        except (KeyError, AssertionError):
+            LOG.debug(_("Using OS SAML Authentication"))
+            return super(RXTSAML2, self).authenticate(auth_payload)
+        else:
+            if "id" in auth_payload:
+                LOG.debug(_("Using Scoped Token Normally"))
+                return base.AuthHandlerResponse(
+                    status=True,
+                    response_body=None,
+                    response_data=mapped.handle_scoped_token(
+                        self._get_token_ref(auth_payload),
+                        PROVIDERS.federation_api,
+                        PROVIDERS.identity_api,
+                    ),
+                )
+            else:
+                LOG.debug(
+                    _("Using Rackspace Global Authentication via OS SAML")
+                )
+                with RXTSAMLAuth(auth_payload=auth_payload) as rxt:
+                    return rxt.rxt_auth()
