@@ -154,7 +154,7 @@ RXT_ROLES = {
         "observer": "heat_stack_user",
     },
     "identity": {
-        "admin": "reader",
+        "admin": "member",
         "creator": "reader",
         "default": "reader",
         "tenant-access": "reader",
@@ -585,7 +585,13 @@ class RXTv2BaseAuth(object):
             if not is_user_admin:
                 try:
                     rxt_role, rxt_value = role["name"].split(":")
-                except (ValueError, KeyError, AttributeError) as e:
+                except ValueError as e:
+                    if role["name"].lower() == "admin":
+                        rxt_role = "identity"
+                        rxt_value = "user-admin"
+                    else:
+                        continue
+                except (KeyError, AttributeError) as e:
                     LOG.debug(
                         "Could not parse the role name and value: {error}".format(
                             error=e
