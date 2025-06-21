@@ -42,7 +42,7 @@ RXT_SESSION_CACHE.expiration_time = 120
 
 RXT_SERVICE_CACHE = ks_cache.create_region(name="rxt_srv")
 ks_cache.cache.configure_cache_region(keystone.conf.CONF, RXT_SERVICE_CACHE)
-RXT_SERVICE_CACHE.expiration_time = 60
+RXT_SERVICE_CACHE.expiration_time = 120
 
 LOG = log.getLogger(__name__)
 PROVIDERS = mapped.PROVIDERS
@@ -555,64 +555,58 @@ class RXTv2BaseAuth(object):
     def _role_parser(role_list):
         LOG.debug(_("Parsing roles: %s"), role_list)
 
-        access_roles = {
-            k: v["default"]
-            for k, v in RXT_ROLES.items()
-            if v.get("default") is not None
-        }
-
-        for role in role_list:
-            role_name = role.get("name", "")
-            if role_name == "admin" or (
-                role_name.startswith("identity:")
-                and role_name.endswith("user-admin")
-            ):
-                LOG.debug(_("RXT Auth admin discovered: %s"), role)
-                access_roles = {
-                    k: v["admin"]
-                    for k, v in RXT_ROLES.items()
-                    if v.get("admin") is not None
-                }
-                break
-
-            try:
-                rxt_role, rxt_value = role_name.split(":", 1)
-            except ValueError as e:
-                LOG.debug(
-                    _(
-                        "Could not parse the role name and value, skipping: %s - %s"
-                    ),
-                    role,
-                    e,
-                )
-                continue
-            except AttributeError as e:
-                LOG.debug(_("Access role is undefined: %s - %s"), role, e)
-                continue
-            else:
-                rxt_role_mapping = RXT_ROLES.get(rxt_role, dict())
-                rxt_role_mapped_value = rxt_role_mapping.get(rxt_value)
-                if rxt_role_mapped_value:
-                    # NOTE(cloudnull): The compute role is mapped to the
-                    #                  nova role for backwards compatibility.
-                    if rxt_role == "nova":
-                        access_roles["compute"] = rxt_role_mapped_value
-                    access_roles[rxt_role] = rxt_role_mapped_value
+        if any(
+            r["name"] == "admin" or r["name"].endswith("user-admin")
+            for r in role_list
+        ):
+            access_roles = {
+                k: v["admin"]
+                for k, v in RXT_ROLES.items()
+                if v.get("admin") is not None
+            }
+        else:
+            access_roles = {
+                k: v["default"]
+                for k, v in RXT_ROLES.items()
+                if v.get("default") is not None
+            }
+            for role in role_list:
+                role_name = role.get("name", "")
+                try:
+                    rxt_role, rxt_value = role_name.split(":", 1)
+                except ValueError as e:
+                    LOG.debug(
+                        _(
+                            "Could not parse the role name and value, skipping: %s - %s"
+                        ),
+                        role,
+                        e,
+                    )
+                    continue
+                except AttributeError as e:
+                    LOG.debug(_("Access role is undefined: %s - %s"), role, e)
+                    continue
+                else:
+                    rxt_role_mapping = RXT_ROLES.get(rxt_role, dict())
+                    rxt_role_mapped_value = rxt_role_mapping.get(rxt_value)
+                    if rxt_role_mapped_value:
+                        # NOTE(cloudnull): The compute role is mapped to the
+                        #                  nova role for backwards compatibility.
+                        if rxt_role == "nova":
+                            access_roles["compute"] = rxt_role_mapped_value
+                        access_roles[rxt_role] = rxt_role_mapped_value
 
         LOG.debug(_("Access Roles: %s"), access_roles)
 
         access_projects = set()
         for role in role_list:
-            try:
-                project_tenant = role["tenantId"]
-                project_type, project_value = project_tenant.split(":")
-            except KeyError as e:
-                LOG.debug(
-                    _("Role lacks assigned tenant IDs, skipping: %s - %s"),
-                    role,
-                    e,
-                )
+            project_tenant = role.get("tenantId")
+            if project_tenant and not project_tenant.startswith(
+                keystone.conf.CONF.rackspace.role_attribute
+            ):
                 continue
+            try:
+                _, project_value = project_tenant.split(":")
             except ValueError as e:
                 LOG.debug(
                     _("Could not parse the project value, skipping: %s - %s"),
@@ -621,14 +615,11 @@ class RXTv2BaseAuth(object):
                 )
                 continue
             else:
-                if project_type.startswith(
-                    keystone.conf.CONF.rackspace.role_attribute
-                ):
-                    access_projects.add(project_value)
+                access_projects.add(project_value)
 
         LOG.debug(_("Access Projects: %s"), access_projects)
 
-        return list(access_projects), access_roles
+        return sorted(access_projects), access_roles
 
     @staticmethod
     def _return_auth_url(ddi):
@@ -809,6 +800,9 @@ class RXTv2BaseAuth(object):
             raise exception.Unauthorized(
                 _("Failed to parse role data from Rackspace Identity API")
             )
+        except KeyError as e:
+            LOG.error(_("Key error: %s"), e)
+            raise exception.Unauthorized("Invalid role assignment format")
         else:
             return self._role_parser(role_list=role_list)
 
@@ -980,7 +974,6 @@ class RXTv2Credentials(RXTv2BaseAuth):
                 ddi=access_tenant_id,
                 token=access_token["id"],
             )
-            access_projects = sorted(access_projects)
             if not keystone.conf.CONF.rackspace.role_attribute_enforcement:
                 access_projects.append(f"{access_tenant_id}_Flex")
 
