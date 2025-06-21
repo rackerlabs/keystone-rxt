@@ -22,7 +22,10 @@ import urllib.parse as urlparse
 
 import keystone.conf.utils
 import requests
+from requests import adapters
+from urllib3.util import retry
 from oslo_log import log
+from oslo_log import formatters
 import flask
 
 from keystone.auth.plugins import base
@@ -43,6 +46,10 @@ RXT_SESSION_CACHE.expiration_time = 120
 RXT_SERVICE_CACHE = ks_cache.create_region(name="rxt_srv")
 ks_cache.cache.configure_cache_region(keystone.conf.CONF, RXT_SERVICE_CACHE)
 RXT_SERVICE_CACHE.expiration_time = 120
+
+RXT_ROLE_CACHE = ks_cache.create_region(name="rxt_role")
+ks_cache.cache.configure_cache_region(keystone.conf.CONF, RXT_ROLE_CACHE)
+RXT_ROLE_CACHE.expiration_time = 120
 
 LOG = log.getLogger(__name__)
 PROVIDERS = mapped.PROVIDERS
@@ -197,6 +204,50 @@ RXT_ROLES = {
     },
 }
 SESSION_ID_REGEX = re.compile(r"""sessionId='(.*?[^\\])'""")
+
+
+class SecretFilter(formatters.ContextFormatter):
+    """Filter to sanitize sensitive headers in log records."""
+
+    SECRET_HEADERS = {"X-SessionId", "X-Auth-Token", "Cookie"}
+
+    def sanitize(self, data):
+        """Sanitize sensitive data in the log record.
+
+        This method will replace sensitive headers with "***" in the log
+        record. If the data is a dictionary, it will iterate through the
+        items and replace the values of the sensitive headers with "***".
+        If the data is not a dictionary, it will return the data as is.
+        :param data: The data to be sanitized.
+
+        :type data: dict or any
+        :returns: Sanitized data with sensitive headers replaced.
+        :rtype: dict or any
+        """
+
+        if isinstance(data, dict):
+            return {
+                k: ("***" if k in self.SECRET_HEADERS else v)
+                for k, v in data.items()
+            }
+        return data
+
+    def format(self, record):
+        """Format the log record.
+
+        :param record: The log record to be formatted.
+        :type record: logging.LogRecord
+        :returns: The formatted log record with sanitized message.
+        :rtype: str
+        """
+
+        record.msg = self.sanitize(record.msg)
+        return super().format(record)
+
+
+# Ensure that the SecretFilter is applied to all log handlers.
+for handler in LOG.handlers:
+    handler.addFilter(SecretFilter())
 
 
 class RuleProcessor(mapped.utils.RuleProcessor):
@@ -532,9 +583,15 @@ mapped.utils.IDP_ATTRIBUTE_MAPPING_SCHEMAS = {
 class RXTv2BaseAuth(object):
     """Base class for Rackspace v2 authentication."""
 
+    _session_pool = None
+
     def __init__(self):
         """Initialize the base authentication object."""
-        self.session = requests.Session()
+
+        if not self.__class__._session_pool:
+            self.__class__._session_pool = self._create_session_pool()
+
+        self.session = self.__class__._session_pool
         self.session_id = None
 
     def __enter__(self):
@@ -551,9 +608,67 @@ class RXTv2BaseAuth(object):
             self.session.close()
         LOG.debug(_("Rackspace IDP Login complete, returning to OS"))
 
+    @classmethod
+    def _create_session_pool(cls):
+        """Create a reusable session with connection pooling.
+
+        This method creates a reusable session with connection pooling and
+        retry strategies. The session is configured to handle retries for
+        specific HTTP status codes and to use connection pooling for
+        improved performance. The session is also configured with default
+        headers to ensure that requests are made with the correct user agent
+        and accept headers.
+
+        :returns: A requests.Session object with connection pooling and retry
+        :rtype: requests.Session
+        """
+
+        session = requests.Session()
+
+        # Configure retry strategy
+        retry_strategy = retry.Retry(
+            total=3,
+            backoff_factor=0.3,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=("GET", "POST"),
+        )
+
+        # Configure adapter with connection pooling
+        adapter = adapters.HTTPAdapter(
+            pool_connections=16, pool_maxsize=64, max_retries=retry_strategy
+        )
+
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+
+        # Set default headers
+        session.headers.update(
+            {
+                "User-Agent": "keystone-rxt/1.0",
+                "Accept": "application/json",
+                "Connection": "keep-alive",
+            }
+        )
+
+        return session
+
     @staticmethod
     def _role_parser(role_list):
-        LOG.debug(_("Parsing roles: %s"), role_list)
+        """Parse the role list and return access roles and projects.
+
+        This method will parse the role list and return a tuple containing
+        the access projects and access roles. The access roles are determined
+        based on the role names and the predefined RXT_ROLES mapping. If the
+        role name is "admin" or ends with "user-admin", the admin roles are
+        returned. Otherwise, the default roles are returned. The access
+        projects are determined by extracting the tenantId from the role
+        and filtering out any projects that do not start with the
+        `keystone.conf.CONF.rackspace.role_attribute` prefix.
+
+        :param list role_list: The list of roles to be parsed.
+        :returns: A tuple containing the access projects and access roles.
+        :rtype: tuple
+        """
 
         if any(
             r["name"] == "admin" or r["name"].endswith("user-admin")
@@ -596,8 +711,6 @@ class RXTv2BaseAuth(object):
                             access_roles["compute"] = rxt_role_mapped_value
                         access_roles[rxt_role] = rxt_role_mapped_value
 
-        LOG.debug(_("Access Roles: %s"), access_roles)
-
         access_projects = set()
         for role in role_list:
             project_tenant = role.get("tenantId")
@@ -616,8 +729,6 @@ class RXTv2BaseAuth(object):
                 continue
             else:
                 access_projects.add(project_value)
-
-        LOG.debug(_("Access Projects: %s"), access_projects)
 
         return sorted(access_projects), access_roles
 
@@ -651,7 +762,7 @@ class RXTv2BaseAuth(object):
 
         ddi_str = str(ddi)
         if not ddi_str:
-            raise ValueError("DDI cannot be empty")
+            raise ValueError(_("DDI cannot be empty"))
 
         if ddi_str.startswith(UK_DDI_PREFIX):
             return RACKSPACE_UK_IDENTITY_URL
@@ -742,6 +853,14 @@ class RXTv2BaseAuth(object):
             returns an error or the user is not authorized.
         """
 
+        role_cache_key = hashlib.shake_256(
+            f"{uid}-{ddi}".encode("utf-8")
+        ).hexdigest(length=16)
+        cached_roles = RXT_ROLE_CACHE.get(role_cache_key)
+        if cached_roles:
+            LOG.info(_("Using cached role assignments for user: %s"), uid)
+            return cached_roles
+
         try:
             auth_url = urlparse.urljoin(
                 self._return_auth_url(ddi=ddi),
@@ -751,10 +870,7 @@ class RXTv2BaseAuth(object):
             r = self.session.get(
                 auth_url,
                 timeout=REQUEST_TIMEOUT,
-                headers={
-                    "X-Auth-Token": token,
-                    "Accept": "application/json",
-                },
+                headers={"X-Auth-Token": token},
             )
             r.raise_for_status()
             role_assignment = r.json()
@@ -777,12 +893,16 @@ class RXTv2BaseAuth(object):
                                     tenantId=tenant,
                                 )
                             )
+            LOG.debug(
+                _("Assembled Role List: %s"),
+                role_list,
+            )
         except requests.Timeout:
             LOG.error(_("Timeout retrieving roles for user %s"), uid)
-            raise exception.Unauthorized("Request timeout")
+            raise exception.Unauthorized(_("Request timeout"))
         except requests.ConnectionError:
             LOG.error(_("Connection error for user %s"), uid)
-            raise exception.Unauthorized("Network error")
+            raise exception.Unauthorized(_("Network error"))
         except requests.HTTPError as e:
             LOG.error(_("HTTP error retrieving roles for user %s: %s"), uid, e)
             raise exception.Unauthorized(
@@ -802,9 +922,15 @@ class RXTv2BaseAuth(object):
             )
         except KeyError as e:
             LOG.error(_("Key error: %s"), e)
-            raise exception.Unauthorized("Invalid role assignment format")
+            raise exception.Unauthorized(_("Invalid role assignment format"))
         else:
-            return self._role_parser(role_list=role_list)
+            result = self._role_parser(role_list=role_list)
+            LOG.debug(
+                _("Parsed Role Assignments: %s"),
+                result,
+            )
+            RXT_ROLE_CACHE.set(role_cache_key, result)
+            return result
 
 
 class RXTv2Credentials(RXTv2BaseAuth):
@@ -1177,10 +1303,10 @@ class RXPWAuth(RXTv2Credentials):
             return self.get_rxt_auth(auth_data=auth_data, auth_type=auth_type)
         except requests.Timeout:
             LOG.error(_("Timeout while authenticating"))
-            raise exception.Unauthorized("Request timeout")
+            raise exception.Unauthorized(_("Request timeout"))
         except requests.ConnectionError:
             LOG.error(_("Connection error while authenticating"))
-            raise exception.Unauthorized("Network error")
+            raise exception.Unauthorized(_("Network error"))
         except requests.HTTPError:
             if auth_type == "apiKeyCredentials":
                 self.rxt_auth_payload = self.passwordCredentials
