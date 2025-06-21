@@ -554,8 +554,7 @@ class RXTv2BaseAuth(object):
     @staticmethod
     def _role_parser(role_list):
         LOG.debug(_("Parsing roles: %s"), role_list)
-        access_projects = set()
-        role_attribute = keystone.conf.CONF.rackspace.role_attribute
+
         access_roles = {
             k: v["default"]
             for k, v in RXT_ROLES.items()
@@ -599,6 +598,11 @@ class RXTv2BaseAuth(object):
                     if rxt_role == "nova":
                         access_roles["compute"] = rxt_role_mapped_value
                     access_roles[rxt_role] = rxt_role_mapped_value
+
+        LOG.debug(_("Access Roles: %s"), access_roles)
+
+        access_projects = set()
+        for role in role_list:
             try:
                 project_tenant = role["tenantId"]
                 project_type, project_value = project_tenant.split(":")
@@ -617,14 +621,17 @@ class RXTv2BaseAuth(object):
                 )
                 continue
             else:
-                if project_type.startswith(role_attribute):
+                if project_type.startswith(
+                    keystone.conf.CONF.rackspace.role_attribute
+                ):
                     access_projects.add(project_value)
+
         LOG.debug(_("Access Projects: %s"), access_projects)
-        LOG.debug(_("Access Roles: %s"), access_roles)
+
         return list(access_projects), access_roles
 
     @staticmethod
-    def _return_auth_url(ddi=None):
+    def _return_auth_url(ddi):
         """Return the Rackspace authentication URL.
 
         Inspect the ddi and return the correct Rackspace authentication URL.
@@ -632,7 +639,7 @@ class RXTv2BaseAuth(object):
         from the Flask request environment.
 
         :param str ddi: The user ID to be used for determining the auth URL.
-        :type ddi: int, str, or None
+        :type ddi: int, str
         :returns: The Rackspace authentication URL.
         :rtype: str
         """
@@ -977,7 +984,6 @@ class RXTv2Credentials(RXTv2BaseAuth):
             if not keystone.conf.CONF.rackspace.role_attribute_enforcement:
                 access_projects.append(f"{access_tenant_id}_Flex")
 
-            LOG.debug(_("Found access projects: %s"), access_projects)
             if len(access_projects) < 1:
                 raise exception.Unauthorized(
                     _(
