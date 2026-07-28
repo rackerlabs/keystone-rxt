@@ -733,6 +733,102 @@ class RXTv2BaseAuth(object):
         return sorted(access_projects), access_roles
 
     @staticmethod
+    def _parse_enabled_tenants(tenants_response):
+        """Parse the v2.0/tenants response and return enabled tenant IDs.
+
+        This method extracts tenant IDs from the IdP tenants response and
+        returns a set of tenant IDs that are enabled. Tenants that are
+        disabled (enabled: false) or missing from the response entirely
+        are not included.
+
+        The tenant IDs in the response use the format "os_flex:<uuid>", but
+        the role-derived access_projects list contains bare UUIDs (the prefix
+        is stripped by _role_parser). This method extracts the bare UUID
+        portion for os_flex tenants to enable correct comparison.
+
+        :param dict tenants_response: The JSON response from GET /v2.0/tenants.
+        :returns: A set of enabled tenant IDs (bare UUIDs for os_flex tenants).
+        :rtype: set
+        """
+
+        enabled_tenants = set()
+        role_attr = keystone.conf.CONF.rackspace.role_attribute
+        for tenant in tenants_response.get("tenants", []):
+            if not tenant["enabled"]:
+                continue
+            tenant_id = tenant["id"]
+            # Extract bare UUID if this is an os_flex tenant, to match
+            # the format produced by _role_parser
+            if tenant_id.startswith(f"{role_attr}:"):
+                tenant_id = tenant_id.split(":", 1)[1]
+            enabled_tenants.add(tenant_id)
+        return enabled_tenants
+
+    @staticmethod
+    def _filter_projects_by_enabled_tenants(access_projects, enabled_tenants):
+        """Filter access projects to only include enabled tenants.
+
+        Cross-checks the role-derived candidate projects against the set of
+        enabled tenants from the IdP. Projects are kept only if they appear
+        in the enabled tenants set.
+
+        :param list access_projects: List of project IDs derived from roles.
+        :param set enabled_tenants: Set of enabled tenant IDs from /v2.0/tenants.
+        :returns: Filtered list of project IDs that are enabled.
+        :rtype: list
+        """
+
+        filtered = [p for p in access_projects if p in enabled_tenants]
+        removed = set(access_projects) - set(filtered)
+        if removed:
+            LOG.info(
+                _("Filtered out disabled/missing Flex tenants: %s"),
+                sorted(removed),
+            )
+        return filtered
+
+    def _fetch_enabled_tenants(self, ddi, token):
+        """Fetch the list of enabled tenants from the IdP.
+
+        Calls GET /v2.0/tenants using the authenticated user's token to
+        retrieve the list of tenants visible to that user. Returns the
+        set of tenant IDs that are enabled.
+
+        :param str ddi: The DDI used to determine the auth URL.
+        :param str token: The auth token for the authenticated user.
+        :returns: A set of enabled tenant IDs, or None if the lookup fails.
+        :rtype: set or None
+        """
+
+        try:
+            tenants_url = urlparse.urljoin(
+                self._return_auth_url(ddi=ddi),
+                "v2.0/tenants",
+            )
+            LOG.debug(_("Fetching tenants from: %s"), tenants_url)
+            r = self.session.get(
+                tenants_url,
+                timeout=REQUEST_TIMEOUT,
+                headers={"X-Auth-Token": token},
+            )
+            r.raise_for_status()
+            tenants_response = r.json()
+            LOG.debug(_("Tenants response: %s"), tenants_response)
+            return self._parse_enabled_tenants(tenants_response)
+        except requests.Timeout:
+            LOG.warning(_("Timeout fetching tenants list"))
+            return None
+        except requests.ConnectionError:
+            LOG.warning(_("Connection error fetching tenants list"))
+            return None
+        except requests.HTTPError as e:
+            LOG.warning(_("HTTP error fetching tenants list: %s"), e)
+            return None
+        except (ValueError, KeyError) as e:
+            LOG.warning(_("Error parsing tenants response: %s"), e)
+            return None
+
+    @staticmethod
     def _return_auth_url(ddi):
         """Return the Rackspace authentication URL.
 
@@ -924,9 +1020,37 @@ class RXTv2BaseAuth(object):
             LOG.error(_("Key error: %s"), e)
             raise exception.Unauthorized(_("Invalid role assignment format"))
         else:
-            result = self._role_parser(role_list=role_list)
+            access_projects, access_roles = self._role_parser(role_list=role_list)
             LOG.debug(
-                _("Parsed Role Assignments: %s"),
+                _("Parsed Role Assignments (before tenant filter): projects=%s, roles=%s"),
+                access_projects,
+                access_roles,
+            )
+
+            # Filter access_projects by enabled tenants from /v2.0/tenants
+            enabled_tenants = self._fetch_enabled_tenants(ddi=ddi, token=token)
+            if enabled_tenants is not None:
+                access_projects = self._filter_projects_by_enabled_tenants(
+                    access_projects, enabled_tenants
+                )
+                LOG.debug(
+                    _("Filtered access projects by enabled tenants: %s"),
+                    access_projects,
+                )
+            else:
+                # Fail closed: if we cannot verify tenant status, reject all
+                # role-derived Flex projects to avoid projecting disabled tenants
+                LOG.warning(
+                    _(
+                        "Could not fetch tenant list from IdP; "
+                        "failing closed by rejecting role-derived Flex projects"
+                    )
+                )
+                access_projects = []
+
+            result = (access_projects, access_roles)
+            LOG.debug(
+                _("Final Role Assignments: %s"),
                 result,
             )
             RXT_ROLE_CACHE.set(role_cache_key, result)
