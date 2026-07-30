@@ -719,7 +719,7 @@ class RXTv2BaseAuth(object):
             ):
                 continue
             try:
-                _, project_value = project_tenant.split(":")
+                ignored, project_value = project_tenant.split(":", 1)
             except ValueError as e:
                 LOG.debug(
                     _("Could not parse the project value, skipping: %s - %s"),
