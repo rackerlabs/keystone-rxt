@@ -34,6 +34,48 @@ a user has within Rackspace Identity. This file is just an example and can be cu
 OpenStack environment following the typical mapping setup. See more about Keystone Mapping and Federation
 [here](https://docs.openstack.org/keystone/latest/admin/federation/mapping_combinations.html).
 
+### Keystone compatibility
+
+The plugin overrides Keystone's federation mapping project handler
+(`keystone.auth.plugins.mapped.handle_projects_from_mapping`). As of Keystone
+**2026.1**, that handler is called with the signature
+`handle_projects_from_mapping(shadow_projects, existing_roles, user,
+schema_version, assignment_api, resource_api)`. The RXT override matches that
+signature, so the driver works unchanged against both pre-2026.1 and 2026.1
+Keystone releases. If you are running a Keystone that calls the handler with a
+different argument order, the override fails loudly with a `TypeError`
+(describing the expected signature) rather than silently mis-binding the
+arguments.
+
+**Project projection is intentionally additive.** The RXT override creates and
+updates the mapped projects and grants the mapped roles, but it does **not**
+revoke role assignments that the IdP no longer supplies. Upstream 2026.1 can
+reconcile (remove) stale project-role assignments, but only when the attribute
+mapping is registered at schema version `3.0`; this driver's mapping is
+registered at `2.0`, so reconciliation is disabled either way. The `schema_version`
+argument is therefore accepted but ignored.
+
+If your deployment relies on stale role assignments being removed on re-login,
+register the mapping at `--schema-version 3.0` and stop overriding the handler
+(let upstream `handle_projects_from_mapping` run). If you need the RXT-specific
+project tagging/description/metadata behavior together with 2026.1-style
+reconciliation, extend the override in
+`keystone_rxt/rackspace.py::_handle_projects_from_mapping` to call upstream's
+`retrieve_all_project_assignments` and `remove_left_over_project_assignments`.
+
+### Running the tests
+
+The verification tests in `tests/` import the real Keystone driver and exercise
+the patched project-projection handler through the genuine upstream call path.
+They require an editable Keystone install (the version you want to verify
+against) in the same interpreter:
+
+``` shell
+python3 -m venv .venv
+.venv/bin/pip install --editable <path-to-keystone> --editable .
+.venv/bin/python -m pytest tests/ -v
+```
+
 ----
 
 ## Deploying the `keystone-rxt` plugin.

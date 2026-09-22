@@ -444,12 +444,52 @@ class RuleProcessorToHonorDomainOption(
 
 def _handle_projects_from_mapping(
     shadow_projects,
-    idp_domain_id,
     existing_roles,
     user,
+    schema_version,
     assignment_api,
     resource_api,
 ):
+    """RXT project-projection handler for ``handle_projects_from_mapping``.
+
+    The signature matches upstream Keystone 2026.1, which calls this
+    through ``configure_federated_projects``::
+
+        handle_projects_from_mapping(
+            shadow_projects, existing_roles, user, schema_version,
+            assignment_api, resource_api,
+        )
+
+    Unlike upstream, RXT intentionally preserves the pre-2026.1 additive
+    projection semantics: it creates/updates each mapped project and grants
+    the mapped roles, but it never revokes role assignments that the IdP no
+    longer supplies. Upstream's 2026.1 reconciliation (removing stale
+    project-role grants) is gated on attribute-mapping schema version "3.0";
+    RXT's mapping is registered at "2.0", so reconciliation is disabled
+    either way. ``schema_version`` is accepted to stay compatible with the
+    upstream call and is intentionally not used.
+    """
+    if not isinstance(existing_roles, dict):
+        # Guard against the legacy positional call style
+        # (shadow_projects, idp_domain_id, existing_roles, user, ...) that
+        # the pre-2026.1 handler used. If such a caller is still present,
+        # fail loudly instead of silently misbinding the arguments.
+        raise TypeError(
+            "RXT project-projection handler expects upstream 2026.1 "
+            "signature (shadow_projects, existing_roles, user, "
+            "schema_version, assignment_api, resource_api); got "
+            "existing_roles=%r, user=%r" % (type(existing_roles), type(user))
+        )
+
+    # Upstream 2026.1 no longer passes the IdP domain id to this handler --
+    # it is only passed to configure_federated_projects. Derive it from the
+    # user. A shadow federated user ref carries a flat "domain_id" (the SQL
+    # model emits a column, not a nested "domain" dict); fall back to the
+    # nested form defensively.
+    idp_domain_id = user.get("domain_id")
+    if idp_domain_id is None:
+        idp_domain_id = user.get("domain", {}).get("id")
+
     for shadow_project in shadow_projects:
         mapped.configure_project_domain(
             shadow_project, idp_domain_id, resource_api
@@ -511,7 +551,7 @@ def _handle_projects_from_mapping(
                 project["tags"].append(shadow_tag)
                 update_needed = True
 
-        description = shadow_project.get("description", "").strip()
+        description = (shadow_project.get("description") or "").strip()
         if description and project.get("description") != description:
             project["description"] = description
             update_needed = True
