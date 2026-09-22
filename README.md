@@ -34,6 +34,58 @@ a user has within Rackspace Identity. This file is just an example and can be cu
 OpenStack environment following the typical mapping setup. See more about Keystone Mapping and Federation
 [here](https://docs.openstack.org/keystone/latest/admin/federation/mapping_combinations.html).
 
+### Keystone compatibility
+
+The plugin overrides Keystone's federation mapping project handler
+(`keystone.auth.plugins.mapped.handle_projects_from_mapping`). Keystone 2026.1
+changed that handler's positional contract. RXT supports two known API
+generations:
+
+- Keystone 2024.1, 2025.1, and 2025.2 use
+  `handle_projects_from_mapping(shadow_projects, idp_domain_id,
+  existing_roles, user, assignment_api, resource_api)`.
+- Keystone 2026.1 uses
+  `handle_projects_from_mapping(shadow_projects, existing_roles, user,
+  schema_version, assignment_api, resource_api)`.
+
+At import time, RXT requires the installed handler's complete signature to
+match one of these contracts. A missing or unrecognized handler raises
+`RuntimeError` while the plugin is loading, rather than allowing arguments to
+bind incorrectly during a federated login. This protects against unsupported
+changes to the private Keystone API without relying on package-version strings
+or runtime argument types.
+
+**Project projection is intentionally additive.** The RXT override creates or
+updates mapped projects and grants mapped roles, but it does **not** revoke role
+assignments that the IdP no longer supplies. The 2026.1 adapter accepts
+`schema_version` for API compatibility, but RXT retains its existing schema 2.0
+projection behavior.
+
+RXT customizes Keystone's schema 1.0 and 2.0 processor registrations without
+removing newer registrations supplied by Keystone. Preserving a schema 3.0
+registration does not enable Keystone's schema 3.0 stale-assignment
+reconciliation while the RXT project handler override is active, nor does it
+add RXT's project metadata extensions to schema 3.0. Deployments that require
+stale grants to be removed must use Keystone's upstream project handler instead
+of the RXT override. Combining reconciliation with RXT's project tags,
+description, and metadata remains a separate integration effort.
+
+### Running the tests
+
+The verification tests in `tests/` import the installed Keystone driver and
+exercise the selected project-projection adapter through the corresponding
+upstream call contract. To verify every compatibility path, run the suite in
+separate environments containing Keystone 2024.1, Keystone 2025.1,
+Keystone 2025.2, and Keystone 2026.1:
+
+``` shell
+python3 -m venv .venv
+.venv/bin/pip install pytest==8.3.5 \
+    --editable <path-to-keystone> \
+    --editable .
+.venv/bin/python -m pytest tests/ -v
+```
+
 ----
 
 ## Deploying the `keystone-rxt` plugin.
