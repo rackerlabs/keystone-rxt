@@ -148,6 +148,14 @@ roles.
 | `role_attribute` | A string option used as an anchor to discover roles attributed to a given user |
 | `role_attribute_enforcement` | When set `true` will limit a users project to only the discovered GUID for the defined `role_attribute` |
 
+#### User enablement authority
+
+Rackspace Identity is authoritative for users authenticated through RXT. After a successful fresh password, API key,
+TOTP, or SAML authentication and identity mapping, the plugin re-enables the mapped Keystone user when necessary.
+Disabling an RXT-managed user only in Keystone is therefore not a durable lockout; disable the user at Rackspace
+Identity, or disable the relevant Keystone identity provider or domain, to prevent future access. Incomplete MFA
+challenges, cached service-catalog reuse, and existing-token rescoping do not re-enable users.
+
 ### Identity mapping, project, and domain setup
 
 Once the plugin is setup and running, everything will be operating normally. The plugin is passive until
