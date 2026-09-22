@@ -940,13 +940,41 @@ class RXTv2BaseAuth(object):
         else:
             return RACKSPACE_US_IDENTITY_URL
 
+    @staticmethod
+    def _ensure_user_enabled(response_data):
+        """Ensure a Rackspace-authenticated Keystone user is enabled.
+
+        :param dict response_data: Mapped authentication response containing
+                                   the Keystone user ID.
+        """
+        user_id = response_data["user_id"]
+        user_ref = PROVIDERS.identity_api.get_user(user_id)
+        if user_ref.get("enabled", True):
+            return
+
+        PROVIDERS.identity_api.update_user(user_id, {"enabled": True})
+        LOG.info(
+            _(
+                "Re-enabled Keystone user [%s] after successful "
+                "Rackspace authentication."
+            ),
+            user_id,
+        )
+
     def _return_auth_handler(
-        self, status=True, response_body=None, response_data=None
+        self,
+        status=True,
+        response_body=None,
+        response_data=None,
+        reenable_user=False,
     ):
         """Return the auth handler response.
 
         Using the provided auth payload, return the auth handler response.
         This will work for both scoped and unscoped tokens.
+
+        :param bool reenable_user: Whether fresh Rackspace authentication may
+                                   re-enable the mapped Keystone user.
         """
 
         if status is True:
@@ -968,6 +996,10 @@ class RXTv2BaseAuth(object):
                     PROVIDERS.assignment_api,
                     PROVIDERS.role_api,
                 )
+                # Rackspace Identity is authoritative for RXT user enablement
+                # only after a current upstream authentication succeeds.
+                if reenable_user:
+                    self._ensure_user_enabled(response_data)
 
         return base.AuthHandlerResponse(
             status=status,
@@ -1399,7 +1431,7 @@ class RXTv2Credentials(RXTv2BaseAuth):
             self._parse_service_catalog(service_catalog=service_catalog)
             LOG.debug(_("Caching Rackspace service catalog"))
             RXT_SERVICE_CACHE.set(self.hashed_auth_payload, service_catalog)
-            return self._return_auth_handler()
+            return self._return_auth_handler(reenable_user=True)
 
 
 class RXPWAuth(RXTv2Credentials):
@@ -1656,7 +1688,9 @@ class RXTSAMLAuth(RXTv2BaseAuth):
                 _("Failed to authenticate using the Rackspace Identity API")
             )
         else:
-            return self._return_auth_handler(status=True)
+            return self._return_auth_handler(
+                status=True, reenable_user=True
+            )
 
 
 class RXTPassword(password.Password):
