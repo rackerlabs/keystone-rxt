@@ -1,10 +1,9 @@
-"""End-to-end integration check against real Keystone 2026.1.
+"""Integration check for the installed Keystone project-mapping call path.
 
-Drives the GENUINE upstream call path -- ``mapped.configure_federated_projects``
-(which calls ``mapped.handle_projects_from_mapping``) -- and asserts that the
-keystone-rxt monkey-patch is what executes, with the correct 2026.1 arguments
-flowing through. This proves the fix works on the exact code path a real
-federated login uses.
+The test invokes the RXT override through the call contract used by the
+installed Keystone release. Keystone 2026.1 uses
+``configure_federated_projects``; earlier releases call the project handler
+directly.
 """
 
 import hashlib
@@ -12,7 +11,7 @@ import hashlib
 import flask
 from keystone import exception
 
-from conftest import mapped, rxt, assert_patch_active
+from conftest import assert_patch_active, mapped, rxt
 
 
 class FakeAssignmentAPI:
@@ -52,16 +51,15 @@ class FakeResourceAPI:
         return ref
 
     def update_project(self, project_id, project):
-        for (name, dom), ref in self.projects.items():
+        for ref in self.projects.values():
             if ref["id"] == project_id:
                 ref.update(project)
                 return
 
 
-def test_configure_federated_projects_drives_rxt_patch():
+def test_installed_keystone_call_contract_drives_rxt_patch():
     assert_patch_active()
 
-    # Realistic flat-domain shadow user.
     user = {
         "id": "fed-user-1",
         "name": "feduser",
@@ -84,7 +82,7 @@ def test_configure_federated_projects_drives_rxt_patch():
         },
         {
             "name": "66666666",
-            "domain": {"name": "rackspace_cloud_domain"},  # name-only
+            "domain": {"name": "rackspace_cloud_domain"},
             "roles": [{"name": "reader"}, {"name": "creator"}],
             "tags": [],
             "metadata": [],
@@ -103,32 +101,45 @@ def test_configure_federated_projects_drives_rxt_patch():
     )
     assignment_api = FakeAssignmentAPI()
 
-    ctx = flask.Flask("test").test_request_context("/")
-    ctx.push()
-    try:
+    with flask.Flask("test").test_request_context("/"):
         flask.request.environ["RXT_orgPersonType"] = "member"
-        # EXACT upstream 2026.1 signature for configure_federated_projects.
-        mapped.configure_federated_projects(
-            shadow_projects,
-            "rackspace_cloud_domain",  # idp_domain_id
-            existing_roles,
-            user,
-            assignment_api,
-            resource_api,
-            "2.0",  # schema_version
-        )
-    finally:
-        ctx.pop()
+        if (
+            rxt._handle_projects_from_mapping
+            is rxt._handle_projects_from_mapping_2026_1
+        ):
+            mapped.configure_federated_projects(
+                shadow_projects,
+                "rackspace_cloud_domain",
+                existing_roles,
+                user,
+                assignment_api,
+                resource_api,
+                "2.0",
+            )
+        else:
+            mapped.handle_projects_from_mapping(
+                shadow_projects,
+                "rackspace_cloud_domain",
+                existing_roles,
+                user,
+                assignment_api,
+                resource_api,
+            )
 
-    id_555 = hashlib.shake_256("55555555".encode()).hexdigest(length=16)
-    # RXT_orgPersonType = "member" applies to every project.
-    expected = {
+    id_555 = hashlib.shake_256(b"55555555").hexdigest(length=16)
+    expected_grants = {
         ("role-member", "fed-user-1", id_555),
         ("role-reader", "fed-user-1", "proj-66666666"),
         ("role-creator", "fed-user-1", "proj-66666666"),
         ("role-member", "fed-user-1", "proj-66666666"),
     }
-    assert set(assignment_api.granted) == expected
+    assert set(assignment_api.granted) == expected_grants
     assert not assignment_api.deleted
-    project_ids = [p["id"] for p in resource_api.projects.values()]
-    assert id_555 in project_ids
+
+    created_555 = resource_api.projects[
+        ("55555555", "rackspace_cloud_domain")
+    ]
+    assert created_555["id"] == id_555
+    assert created_555["tags"] == ["ddi-55555555"]
+    assert created_555["description"] == "Project for DDI 55555555"
+    assert created_555["ddi"] == "55555555"

@@ -16,6 +16,7 @@ from datetime import datetime
 from dateutil import parser
 import re
 import hashlib
+import inspect
 import json
 
 import urllib.parse as urlparse
@@ -442,61 +443,25 @@ class RuleProcessorToHonorDomainOption(
     """
 
 
-def _handle_projects_from_mapping(
+def _project_projects(
     shadow_projects,
+    idp_domain_id,
     existing_roles,
     user,
-    schema_version,
     assignment_api,
     resource_api,
 ):
-    """RXT project-projection handler for ``handle_projects_from_mapping``.
+    """Apply RXT's additive project and role mapping behavior.
 
-    The signature matches upstream Keystone 2026.1, which calls this
-    through ``configure_federated_projects``::
-
-        handle_projects_from_mapping(
-            shadow_projects, existing_roles, user, schema_version,
-            assignment_api, resource_api,
-        )
-
-    Unlike upstream, RXT intentionally preserves the pre-2026.1 additive
-    projection semantics: it creates/updates each mapped project and grants
-    the mapped roles, but it never revokes role assignments that the IdP no
-    longer supplies. Upstream's 2026.1 reconciliation (removing stale
-    project-role grants) is gated on attribute-mapping schema version "3.0";
-    RXT's mapping is registered at "2.0", so reconciliation is disabled
-    either way. ``schema_version`` is accepted to stay compatible with the
-    upstream call and is intentionally not used.
+    Keystone's supported handler contracts are normalized before reaching
+    this helper. Projects and grants are created or updated, but grants that
+    are no longer supplied by the identity provider are not removed.
     """
-    if not isinstance(existing_roles, dict):
-        # Guard against the legacy positional call style
-        # (shadow_projects, idp_domain_id, existing_roles, user, ...) that
-        # the pre-2026.1 handler used. If such a caller is still present,
-        # fail loudly instead of silently misbinding the arguments.
-        raise TypeError(
-            "RXT project-projection handler expects upstream 2026.1 "
-            "signature (shadow_projects, existing_roles, user, "
-            "schema_version, assignment_api, resource_api); got "
-            "existing_roles=%r, user=%r" % (type(existing_roles), type(user))
-        )
-
-    # Upstream 2026.1 no longer passes the IdP domain id to this handler --
-    # it is only passed to configure_federated_projects. Derive it from the
-    # user. A shadow federated user ref carries a flat "domain_id" (the SQL
-    # model emits a column, not a nested "domain" dict); fall back to the
-    # nested form defensively.
-    idp_domain_id = user.get("domain_id")
-    if idp_domain_id is None:
-        idp_domain_id = user.get("domain", {}).get("id")
-
     for shadow_project in shadow_projects:
         mapped.configure_project_domain(
             shadow_project, idp_domain_id, resource_api
         )
         try:
-            # Check and see if the project already exists and if it
-            # does not, try to create it.
             project = resource_api.get_project_by_name(
                 shadow_project["name"], shadow_project["domain"]["id"]
             )
@@ -504,7 +469,7 @@ def _handle_projects_from_mapping(
             LOG.info(
                 _(
                     "Project %s does not exist. It will be "
-                    "automatically provisioning for user %s.",
+                    "automatically provisioned for user %s.",
                 ),
                 shadow_project["name"],
                 user["id"],
@@ -520,19 +485,14 @@ def _handle_projects_from_mapping(
                 project_ref["id"], project_ref
             )
 
-        shadow_roles = shadow_project["roles"]
-        for shadow_role in shadow_roles:
+        for shadow_role in shadow_project["roles"]:
             assignment_api.create_grant(
                 existing_roles[shadow_role["name"]]["id"],
                 user_id=user["id"],
                 project_id=project["id"],
             )
 
-        # NOTE(cloudnull): Dynmically add roles to the user for a project.
-        #                  This is used to ensure that the user has the
-        #                  correct roles for the project based on what is
-        #                  defined in the mapping, which is retruned from
-        #                  the IdP.
+        # Add roles supplied by Rackspace Identity to each mapped project.
         req_roles = flask.request.environ.get("RXT_orgPersonType", "reader")
         for role in req_roles.split(";"):
             if role in existing_roles:
@@ -542,8 +502,7 @@ def _handle_projects_from_mapping(
                     project_id=project["id"],
                 )
 
-        # Run project update to ensure that the project has the correct tags
-        # and description.
+        # Preserve the existing additive behavior for project attributes.
         update_needed = False
         for shadow_tag in shadow_project.get("tags", list()):
             shadow_tag = shadow_tag.get("project_tag")
@@ -568,11 +527,91 @@ def _handle_projects_from_mapping(
             )
 
 
-# NOTE(cloudnull): Adds tag and description support to the project mapping.
+def _handle_projects_from_mapping_pre_2026_1(
+    shadow_projects,
+    idp_domain_id,
+    existing_roles,
+    user,
+    assignment_api,
+    resource_api,
+):
+    """Adapt Keystone's pre-2026.1 handler contract to RXT projection."""
+    return _project_projects(
+        shadow_projects,
+        idp_domain_id,
+        existing_roles,
+        user,
+        assignment_api,
+        resource_api,
+    )
+
+
+def _handle_projects_from_mapping_2026_1(
+    shadow_projects,
+    existing_roles,
+    user,
+    schema_version,
+    assignment_api,
+    resource_api,
+):
+    """Adapt Keystone's 2026.1 handler contract to RXT projection.
+
+    RXT mappings use additive schema 2.0 behavior, so ``schema_version`` is
+    accepted for API compatibility but does not alter projection semantics.
+    """
+    idp_domain_id = user.get("domain_id")
+    if idp_domain_id is None:
+        idp_domain_id = (user.get("domain") or {}).get("id")
+
+    return _project_projects(
+        shadow_projects,
+        idp_domain_id,
+        existing_roles,
+        user,
+        assignment_api,
+        resource_api,
+    )
+
+
+def _select_project_mapping_handler(upstream_handler):
+    """Return the RXT adapter matching Keystone's installed API contract."""
+    if upstream_handler is None:
+        raise RuntimeError(
+            "Unsupported Keystone project-mapping API: "
+            "handle_projects_from_mapping is not defined"
+        )
+
+    upstream_signature = inspect.signature(upstream_handler)
+    supported_handlers = (
+        _handle_projects_from_mapping_pre_2026_1,
+        _handle_projects_from_mapping_2026_1,
+    )
+
+    for handler in supported_handlers:
+        if upstream_signature == inspect.signature(handler):
+            return handler
+
+    expected_signatures = ", ".join(
+        str(inspect.signature(handler)) for handler in supported_handlers
+    )
+    raise RuntimeError(
+        "Unsupported Keystone handle_projects_from_mapping signature "
+        f"{upstream_signature}; expected one of: {expected_signatures}"
+    )
+
+
+# Capture the original Keystone function before installing the process-wide
+# RXT override. Missing or unknown private API contracts fail during plugin
+# initialization instead of allowing arguments to misbind at login time.
+_UPSTREAM_HANDLE_PROJECTS_FROM_MAPPING = getattr(
+    mapped, "handle_projects_from_mapping", None
+)
+_handle_projects_from_mapping = _select_project_mapping_handler(
+    _UPSTREAM_HANDLE_PROJECTS_FROM_MAPPING
+)
 mapped.handle_projects_from_mapping = _handle_projects_from_mapping
 
-# NOTE(cloudnull): Ensures that the Rackspace plugin is permits the use of tags
-#                  and a description within PROJECTS_SCHEMA_2_0.
+# Extend Keystone's schema 2.0 project mapping with RXT project attributes.
 mapped.utils.PROJECTS_SCHEMA_2_0["items"]["properties"]["tags"] = {
     "type": "array",
     "items": {
@@ -604,19 +643,15 @@ mapped.utils.IDP_ATTRIBUTE_MAPPING_SCHEMA_2_0["properties"]["rules"]["items"][
 ]["local"]["items"]["properties"][
     "projects"
 ] = mapped.utils.PROJECTS_SCHEMA_2_0
-# NOTE(cloudnull): This is to ensure that the RuleProcessor is used for the
-#                  1.0 schema and the RuleProcessorToHonorDomainOption is
-#                  used for the 2.0 schema when running with the rxt auth
-#                  plugin.
-mapped.utils.IDP_ATTRIBUTE_MAPPING_SCHEMAS = {
-    "1.0": {
-        "schema": mapped.utils.IDP_ATTRIBUTE_MAPPING_SCHEMA_1_0,
-        "processor": RuleProcessor,
-    },
-    "2.0": {
-        "schema": mapped.utils.IDP_ATTRIBUTE_MAPPING_SCHEMA_2_0,
-        "processor": RuleProcessorToHonorDomainOption,
-    },
+# Use the RXT processors for schemas it extends without discarding schema
+# versions registered by the installed Keystone release.
+mapped.utils.IDP_ATTRIBUTE_MAPPING_SCHEMAS["1.0"] = {
+    "schema": mapped.utils.IDP_ATTRIBUTE_MAPPING_SCHEMA_1_0,
+    "processor": RuleProcessor,
+}
+mapped.utils.IDP_ATTRIBUTE_MAPPING_SCHEMAS["2.0"] = {
+    "schema": mapped.utils.IDP_ATTRIBUTE_MAPPING_SCHEMA_2_0,
+    "processor": RuleProcessorToHonorDomainOption,
 }
 
 
