@@ -55,20 +55,36 @@ bind incorrectly during a federated login. This protects against unsupported
 changes to the private Keystone API without relying on package-version strings
 or runtime argument types.
 
-**Project projection is intentionally additive.** The RXT override creates or
-updates mapped projects and grants mapped roles, but it does **not** revoke role
-assignments that the IdP no longer supplies. The 2026.1 adapter accepts
-`schema_version` for API compatibility, but RXT retains its existing schema 2.0
-projection behavior.
+### Role reconciliation
+
+**Rackspace Identity is authoritative for the direct project-role grants of an
+authenticating RXT user.** On each successful login the override creates or
+updates the mapped projects, grants the mapped roles, and revokes the user's
+direct project-role grants that Rackspace Identity no longer supplies,
+including grants on projects that are no longer returned. Group, domain, and
+inherited assignments are never modified, and no other user's assignments are
+touched. Because these grants carry no provenance in Keystone, a direct project
+grant added manually for a mapped user is also revoked unless Rackspace
+Identity supplies it.
+
+Revocation requires a complete identity provider response. If the role or
+tenant lookup fails, returns partial data, or is served from a cache entry
+written before this behavior existed, the login still proceeds but no grants
+are revoked. Each revocation and each skipped reconciliation is logged at
+`INFO` with the user, project, and role.
+
+Reconciliation happens only during a successful RXT login. Application
+credentials, EC2/S3 credentials, trusts, and users who never authenticate
+again do not trigger it, so removing access for those cases still requires an
+out-of-band process that revokes grants and, where appropriate, disables the
+mapped user or deletes the stored credentials.
 
 RXT customizes Keystone's schema 1.0 and 2.0 processor registrations without
-removing newer registrations supplied by Keystone. Preserving a schema 3.0
-registration does not enable Keystone's schema 3.0 stale-assignment
-reconciliation while the RXT project handler override is active, nor does it
-add RXT's project metadata extensions to schema 3.0. Deployments that require
-stale grants to be removed must use Keystone's upstream project handler instead
-of the RXT override. Combining reconciliation with RXT's project tags,
-description, and metadata remains a separate integration effort.
+removing newer registrations supplied by Keystone. The 2026.1 adapter accepts
+`schema_version` for API compatibility; RXT applies its own reconciliation
+rather than Keystone's schema 3.0 stale-assignment handling, and preserving a
+schema 3.0 registration does not add RXT's project metadata extensions to that
+schema.
 
 ### Running the tests
 

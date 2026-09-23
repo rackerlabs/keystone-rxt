@@ -58,6 +58,10 @@ RACKSPACE_US_IDENTITY_URL = "https://identity.api.rackspacecloud.com"
 RACKSPACE_UK_IDENTITY_URL = "https://lon.identity.api.rackspacecloud.com"
 UK_DDI_PREFIX = "100"
 REQUEST_TIMEOUT = 30
+# Request marker set only when Rackspace Identity returned a complete role and
+# tenant view. Stale project-role grants are revoked only when it is present,
+# so partial or failed IdP responses can never remove existing access.
+RXT_RECONCILE_ROLES_ENV = "RXT_ReconcileRoles"
 ROLE_ATTRIBUTE = keystone.conf.cfg.StrOpt(
     "role_attribute",
     help=keystone.conf.utils.fmt(
@@ -451,12 +455,15 @@ def _project_projects(
     assignment_api,
     resource_api,
 ):
-    """Apply RXT's additive project and role mapping behavior.
+    """Project the identity provider's mapped projects and roles.
 
     Keystone's supported handler contracts are normalized before reaching
-    this helper. Projects and grants are created or updated, but grants that
-    are no longer supplied by the identity provider are not removed.
+    this helper. Mapped projects are created or updated and the mapped roles
+    are granted. When Rackspace Identity returned a complete view of the
+    user's access, direct project-role grants that it no longer supplies are
+    revoked so Keystone matches the identity provider.
     """
+    desired_grants = set()
     for shadow_project in shadow_projects:
         mapped.configure_project_domain(
             shadow_project, idp_domain_id, resource_api
@@ -485,22 +492,37 @@ def _project_projects(
                 project_ref["id"], project_ref
             )
 
-        for shadow_role in shadow_project["roles"]:
-            assignment_api.create_grant(
-                existing_roles[shadow_role["name"]]["id"],
-                user_id=user["id"],
-                project_id=project["id"],
-            )
+        project_role_ids = {
+            existing_roles[shadow_role["name"]]["id"]
+            for shadow_role in shadow_project["roles"]
+        }
 
         # Add roles supplied by Rackspace Identity to each mapped project.
         req_roles = flask.request.environ.get("RXT_orgPersonType", "reader")
         for role in req_roles.split(";"):
             if role in existing_roles:
-                assignment_api.create_grant(
-                    existing_roles[role]["id"],
-                    user_id=user["id"],
-                    project_id=project["id"],
+                project_role_ids.add(existing_roles[role]["id"])
+            else:
+                # An unknown role cannot be granted, and it is also absent
+                # from the desired state used to revoke stale grants.
+                LOG.warning(
+                    _(
+                        "Role %s supplied by Rackspace Identity for user %s "
+                        "does not exist in Keystone and will not be granted "
+                        "on project %s."
+                    ),
+                    role,
+                    user["id"],
+                    project["id"],
                 )
+
+        for role_id in sorted(project_role_ids):
+            assignment_api.create_grant(
+                role_id,
+                user_id=user["id"],
+                project_id=project["id"],
+            )
+            desired_grants.add((project["id"], role_id))
 
         # Preserve the existing additive behavior for project attributes.
         update_needed = False
@@ -525,6 +547,118 @@ def _project_projects(
             resource_api.update_project(
                 project_id=project["id"], project=project
             )
+
+    _revoke_stale_project_grants(desired_grants, user, assignment_api)
+
+
+def _list_direct_project_grants(user, assignment_api):
+    """Return the user's own non-inherited project-role grants.
+
+    Rackspace Identity only projects direct project-role grants, so domain,
+    group, and inherited assignments are excluded. Keystone reports the latter
+    two through ``indirect`` and ``inherited_to_projects`` respectively.
+    """
+    direct_grants = set()
+    for assignment in assignment_api.list_role_assignments(
+        user_id=user["id"]
+    ):
+        project_id = assignment.get("project_id")
+        if not project_id or assignment.get("indirect"):
+            continue
+        if assignment.get("inherited_to_projects"):
+            continue
+        if assignment.get("user_id") != user["id"]:
+            continue
+        direct_grants.add((project_id, assignment["role_id"]))
+
+    return direct_grants
+
+
+def _revoke_stale_project_grants(desired_grants, user, assignment_api):
+    """Revoke direct project grants the identity provider no longer supplies.
+
+    Revocation is skipped unless the authentication path recorded a complete
+    Rackspace Identity response, so a failed or partial lookup never removes
+    existing access.
+    """
+    if flask.request.environ.get(RXT_RECONCILE_ROLES_ENV) != "true":
+        LOG.info(
+            _(
+                "Skipping role reconciliation for user %s because Rackspace "
+                "Identity did not return a complete role and tenant view; "
+                "%s project-role grants were applied and none were revoked."
+            ),
+            user["id"],
+            len(desired_grants),
+        )
+        return
+
+    if not desired_grants:
+        # An empty projection is not a credible authoritative state, so it
+        # must never be used to revoke every grant the user holds.
+        LOG.info(
+            _(
+                "Skipping role reconciliation for user %s because the "
+                "identity provider projected no project-role grants."
+            ),
+            user["id"],
+        )
+        return
+
+    stale_grants = _list_direct_project_grants(user, assignment_api)
+    stale_grants -= desired_grants
+    if not stale_grants:
+        LOG.info(
+            _(
+                "Role reconciliation complete for user %s: %s project-role "
+                "grants match Rackspace Identity and none were stale."
+            ),
+            user["id"],
+            len(desired_grants),
+        )
+        return
+
+    revoked = 0
+    for project_id, role_id in sorted(stale_grants):
+        try:
+            assignment_api.delete_grant(
+                role_id, user_id=user["id"], project_id=project_id
+            )
+        except exception.NotFound:
+            # A concurrent login may have revoked the same stale grant, and a
+            # grant referencing a deleted role or project cannot be revoked
+            # here. Neither case should fail an otherwise successful login.
+            LOG.info(
+                _(
+                    "Role %s for user %s on project %s could not be revoked "
+                    "because it no longer exists."
+                ),
+                role_id,
+                user["id"],
+                project_id,
+            )
+            continue
+
+        revoked += 1
+        LOG.info(
+            _(
+                "Revoked role %s for user %s on project %s because Rackspace "
+                "Identity no longer supplies it."
+            ),
+            role_id,
+            user["id"],
+            project_id,
+        )
+
+    LOG.info(
+        _(
+            "Role reconciliation complete for user %s: applied %s "
+            "project-role grants and revoked %s stale grants."
+        ),
+        user["id"],
+        len(desired_grants),
+        revoked,
+    )
 
 
 def _handle_projects_from_mapping_pre_2026_1(
@@ -1049,15 +1183,20 @@ class RXTv2BaseAuth(object):
         :param str uid: The user ID to be used for the authentication.
         :param dict ddi: The DDI to be used for the authentication.
         :param str token: The token to be used for the authentication.
-        :returns: A tuple containing the role assignments and the roles that are
-                  available to the user.
+        :returns: A tuple containing the access projects, the roles that are
+                  available to the user, and whether Rackspace Identity
+                  returned a complete role and tenant view. Only a complete
+                  view permits revoking stale project-role grants.
         :rtype: tuple
         :raises keystone.exception.Unauthorized: If the Rackspace Identity API
             returns an error or the user is not authorized.
         """
 
+        # The cache key is versioned because the cached value carries the
+        # completeness flag. Keeping the version out of older keys prevents a
+        # process running a previous release from reading this value shape.
         role_cache_key = hashlib.shake_256(
-            f"{uid}-{ddi}".encode("utf-8")
+            f"v2-{uid}-{ddi}".encode("utf-8")
         ).hexdigest(length=16)
         cached_roles = RXT_ROLE_CACHE.get(role_cache_key)
         if cached_roles:
@@ -1136,6 +1275,10 @@ class RXTv2BaseAuth(object):
 
             # Filter access_projects by enabled tenants from /v2.0/tenants
             enabled_tenants = self._fetch_enabled_tenants(ddi=ddi, token=token)
+            # The role and tenant lookups both succeeded, so the projected
+            # access represents the user's complete Rackspace Identity state
+            # and stale project-role grants may be revoked.
+            roles_authoritative = enabled_tenants is not None
             if enabled_tenants is not None:
                 access_projects = self._filter_projects_by_enabled_tenants(
                     access_projects, enabled_tenants
@@ -1155,7 +1298,7 @@ class RXTv2BaseAuth(object):
                 )
                 access_projects = []
 
-            result = (access_projects, access_roles)
+            result = (access_projects, access_roles, roles_authoritative)
             LOG.debug(
                 _("Final Role Assignments: %s"),
                 result,
@@ -1285,6 +1428,7 @@ class RXTv2Credentials(RXTv2BaseAuth):
         tenant_name=None,
         tenant_id=None,
         org_person_type=None,
+        roles_authoritative=False,
     ):
         """Set the federation environment variables.
 
@@ -1299,6 +1443,9 @@ class RXTv2Credentials(RXTv2BaseAuth):
         :param str tenant_id: The tenant_id to be set in the environment.
         :param str org_person_type: The org_person_type to be set in the
                                     environment.
+        :param bool roles_authoritative: Whether Rackspace Identity returned a
+                                         complete role and tenant view, which
+                                         permits revoking stale grants.
         """
 
         if username:
@@ -1313,6 +1460,9 @@ class RXTv2Credentials(RXTv2BaseAuth):
             flask.request.environ["RXT_TenantID"] = tenant_id
         if org_person_type:
             flask.request.environ["RXT_orgPersonType"] = org_person_type
+        flask.request.environ[RXT_RECONCILE_ROLES_ENV] = (
+            "true" if roles_authoritative else "false"
+        )
 
     def _parse_service_catalog(self, service_catalog):
         """Parse the Rackspace Service Catalog and set the environment variables.
@@ -1326,7 +1476,11 @@ class RXTv2Credentials(RXTv2BaseAuth):
             access_user = service_catalog["access"]["user"]
             access_token = service_catalog["access"]["token"]
             access_tenant_id = access_token["tenant"]["id"]
-            access_projects, access_roles = self._return_rxt_roles(
+            (
+                access_projects,
+                access_roles,
+                roles_authoritative,
+            ) = self._return_rxt_roles(
                 uid=access_user["id"],
                 ddi=access_tenant_id,
                 token=access_token["id"],
@@ -1354,6 +1508,7 @@ class RXTv2Credentials(RXTv2BaseAuth):
                 tenant_name=tenant_ids,
                 tenant_id=tenant_ids,
                 org_person_type=";".join(set(access_roles.values())),
+                roles_authoritative=roles_authoritative,
             )
         except (KeyError, TypeError, ValueError) as e:
             LOG.error(
@@ -1672,7 +1827,11 @@ class RXTSAMLAuth(RXTv2BaseAuth):
         LOG.debug(_("Rackspace IDP SAML2 Login started"))
 
         try:
-            access_projects, access_roles = self._return_rxt_roles(
+            (
+                access_projects,
+                access_roles,
+                roles_authoritative,
+            ) = self._return_rxt_roles(
                 uid=flask.request.environ["uid"],
                 ddi=flask.request.environ["REMOTE_DDI"],
                 token=flask.request.environ["REMOTE_AUTH_TOKEN"],
@@ -1682,6 +1841,9 @@ class RXTSAMLAuth(RXTv2BaseAuth):
             )
             flask.request.environ["RXT_orgPersonType"] = ";".join(
                 set(access_roles.values())
+            )
+            flask.request.environ[RXT_RECONCILE_ROLES_ENV] = (
+                "true" if roles_authoritative else "false"
             )
         except (ValueError, requests.HTTPError):
             raise exception.Unauthorized(
