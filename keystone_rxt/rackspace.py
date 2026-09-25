@@ -557,9 +557,16 @@ def _project_projects(
 def _list_direct_project_grants(user, assignment_api):
     """Return the user's own non-inherited project-role grants.
 
-    Rackspace Identity only projects direct project-role grants, so domain,
-    group, and inherited assignments are excluded. Keystone reports the latter
-    two through ``indirect`` and ``inherited_to_projects`` respectively.
+    Rackspace Identity only projects direct project-role grants, so every
+    other kind of access the user holds is left alone. Filtering by
+    ``user_id`` returns user-actor assignments only, which is what excludes
+    group-derived access; domain assignments carry no ``project_id``; and
+    inherited assignments are reported through ``inherited_to_projects``.
+
+    The ``indirect`` check guards the assumption that this listing is not
+    expanded. Keystone sets that key only for effective assignments, which
+    this call does not request, so dropping the check would let a later
+    switch to ``effective=True`` silently revoke group-derived access.
     """
     direct_grants = set()
     for assignment in assignment_api.list_role_assignments(

@@ -223,7 +223,10 @@ def test_group_domain_and_other_user_assignments_are_preserved():
         projects = _existing_project("11111111", "proj-1")
         assignment_api = FakeAssignmentAPI(
             [
-                # Group-derived project assignment.
+                # Group-derived project assignment. Keystone only reports
+                # this shape for effective assignments, which the lookup does
+                # not request, so this covers the guard rather than a shape
+                # the current call can return.
                 {
                     "user_id": USER["id"],
                     "project_id": "proj-gone",
