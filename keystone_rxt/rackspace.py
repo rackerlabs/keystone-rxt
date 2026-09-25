@@ -587,9 +587,10 @@ def _revoke_stale_project_grants(desired_grants, user, assignment_api):
     if flask.request.environ.get(RXT_RECONCILE_ROLES_ENV) != "true":
         LOG.info(
             _(
-                "Skipping role reconciliation for user %s because Rackspace "
-                "Identity did not return a complete role and tenant view; "
-                "%s project-role grants were applied and none were revoked."
+                "Skipping role reconciliation for user %s because this login "
+                "recorded no complete Rackspace Identity role and tenant "
+                "view; %s project-role grants were applied and none were "
+                "revoked."
             ),
             user["id"],
             len(desired_grants),
@@ -599,7 +600,7 @@ def _revoke_stale_project_grants(desired_grants, user, assignment_api):
     if not desired_grants:
         # An empty projection is not a credible authoritative state, so it
         # must never be used to revoke every grant the user holds.
-        LOG.info(
+        LOG.warning(
             _(
                 "Skipping role reconciliation for user %s because the "
                 "identity provider projected no project-role grants."
@@ -611,7 +612,9 @@ def _revoke_stale_project_grants(desired_grants, user, assignment_api):
     stale_grants = _list_direct_project_grants(user, assignment_api)
     stale_grants -= desired_grants
     if not stale_grants:
-        LOG.info(
+        # The common case on every login. Logged at debug so the info level
+        # records only reconciliations that changed or withheld access.
+        LOG.debug(
             _(
                 "Role reconciliation complete for user %s: %s project-role "
                 "grants match Rackspace Identity and none were stale."
