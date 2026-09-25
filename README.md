@@ -73,6 +73,14 @@ written before this behavior existed, the login still proceeds but no grants
 are revoked. Each revocation and each skipped reconciliation is logged at
 `INFO` with the user, project, and role.
 
+Completeness is why the tenant lookup requests `apply_rcn_roles=true` and
+follows the collection's pagination links. The effective-roles endpoint always
+reports RCN-sourced tenant assignments, so without that parameter the two
+views disagree and RCN-reachable Flex tenants look as though they were
+removed. A tenant collection that cannot be read in full — an unrecognized
+response shape, a failed page, or one that exceeds the supported page count —
+is reported as no result at all, which preserves existing grants.
+
 Reconciliation happens only during a successful RXT login. Application
 credentials, EC2/S3 credentials, trusts, and users who never authenticate
 again do not trigger it, so removing access for those cases still requires an

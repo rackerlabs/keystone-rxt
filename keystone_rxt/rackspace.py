@@ -58,6 +58,9 @@ RACKSPACE_US_IDENTITY_URL = "https://identity.api.rackspacecloud.com"
 RACKSPACE_UK_IDENTITY_URL = "https://lon.identity.api.rackspacecloud.com"
 UK_DDI_PREFIX = "100"
 REQUEST_TIMEOUT = 30
+# Upper bound on tenant collection pages. A collection that does not finish
+# within this many pages is treated as unreadable rather than partial.
+TENANT_PAGE_LIMIT = 50
 # Request marker set only when Rackspace Identity returned a complete role and
 # tenant view. Stale project-role grants are revoked only when it is present,
 # so partial or failed IdP responses can never remove existing access.
@@ -942,12 +945,50 @@ class RXTv2BaseAuth(object):
         return sorted(access_projects), access_roles
 
     @staticmethod
-    def _parse_enabled_tenants(tenants_response):
-        """Parse the v2.0/tenants response and return enabled tenant IDs.
+    def _tenants_page(tenants_response):
+        """Return one page of tenants and the link to the next page.
 
-        This method extracts tenant IDs from the IdP tenants response and
-        returns a set of tenant IDs that are enabled. Tenants that are
-        disabled (enabled: false) or missing from the response entirely
+        The Identity API documents two shapes for a tenant collection: a
+        plain array with optional sibling ``tenants_links``, and a paginated
+        object holding ``values`` and ``links``. An unrecognized shape raises
+        ``ValueError`` so the caller can fail closed rather than treat an
+        unreadable page as an empty one.
+
+        :param dict tenants_response: A JSON response from GET /v2.0/tenants.
+        :returns: A tuple of the tenant list and the next page URL or None.
+        :rtype: tuple
+        """
+
+        tenants = tenants_response.get("tenants")
+        if isinstance(tenants, dict):
+            values = tenants.get("values", [])
+            links = tenants.get("links", [])
+        elif isinstance(tenants, list):
+            values = tenants
+            links = tenants_response.get("tenants_links", [])
+        else:
+            raise ValueError(
+                f"unsupported tenants collection: {type(tenants).__name__}"
+            )
+
+        if not isinstance(values, list):
+            raise ValueError(
+                f"unsupported tenants page: {type(values).__name__}"
+            )
+
+        next_url = None
+        for link in links or []:
+            if isinstance(link, dict) and link.get("rel") == "next":
+                next_url = link.get("href")
+                break
+
+        return values, next_url
+
+    @staticmethod
+    def _parse_enabled_tenants(tenants):
+        """Return the enabled tenant IDs from tenant records.
+
+        Tenants that are disabled, or missing from the collection entirely,
         are not included.
 
         The tenant IDs in the response use the format "os_flex:<uuid>", but
@@ -955,14 +996,14 @@ class RXTv2BaseAuth(object):
         is stripped by _role_parser). This method extracts the bare UUID
         portion for os_flex tenants to enable correct comparison.
 
-        :param dict tenants_response: The JSON response from GET /v2.0/tenants.
+        :param list tenants: Tenant records from GET /v2.0/tenants.
         :returns: A set of enabled tenant IDs (bare UUIDs for os_flex tenants).
         :rtype: set
         """
 
         enabled_tenants = set()
         role_attr = keystone.conf.CONF.rackspace.role_attribute
-        for tenant in tenants_response.get("tenants", []):
+        for tenant in tenants:
             if not tenant["enabled"]:
                 continue
             tenant_id = tenant["id"]
@@ -997,33 +1038,32 @@ class RXTv2BaseAuth(object):
         return filtered
 
     def _fetch_enabled_tenants(self, ddi, token):
-        """Fetch the list of enabled tenants from the IdP.
+        """Fetch the complete list of enabled tenants from the IdP.
 
-        Calls GET /v2.0/tenants using the authenticated user's token to
-        retrieve the list of tenants visible to that user. Returns the
-        set of tenant IDs that are enabled.
+        Calls GET /v2.0/tenants using the authenticated user's token and
+        follows pagination links until the collection is exhausted.
+
+        ``apply_rcn_roles`` is requested so this collection covers the same
+        tenants as the effective-roles lookup, which always reports RCN
+        assignments. Without it the two views disagree and RCN-reachable Flex
+        tenants are treated as missing.
+
+        Returns None unless the whole collection was read, so a partial view
+        is never mistaken for the user's complete tenant state.
 
         :param str ddi: The DDI used to determine the auth URL.
         :param str token: The auth token for the authenticated user.
-        :returns: A set of enabled tenant IDs, or None if the lookup fails.
+        :returns: A set of enabled tenant IDs, or None if the collection could
+                  not be read in full.
         :rtype: set or None
         """
 
+        tenants_url = urlparse.urljoin(
+            self._return_auth_url(ddi=ddi),
+            "v2.0/tenants?apply_rcn_roles=true",
+        )
         try:
-            tenants_url = urlparse.urljoin(
-                self._return_auth_url(ddi=ddi),
-                "v2.0/tenants",
-            )
-            LOG.debug(_("Fetching tenants from: %s"), tenants_url)
-            r = self.session.get(
-                tenants_url,
-                timeout=REQUEST_TIMEOUT,
-                headers={"X-Auth-Token": token},
-            )
-            r.raise_for_status()
-            tenants_response = r.json()
-            LOG.debug(_("Tenants response: %s"), tenants_response)
-            return self._parse_enabled_tenants(tenants_response)
+            return self._collect_enabled_tenants(tenants_url, token)
         except requests.Timeout:
             LOG.warning(_("Timeout fetching tenants list"))
             return None
@@ -1033,9 +1073,50 @@ class RXTv2BaseAuth(object):
         except requests.HTTPError as e:
             LOG.warning(_("HTTP error fetching tenants list: %s"), e)
             return None
+        except requests.RequestException as e:
+            LOG.warning(_("Request error fetching tenants list: %s"), e)
+            return None
         except (ValueError, KeyError) as e:
             LOG.warning(_("Error parsing tenants response: %s"), e)
             return None
+
+    def _collect_enabled_tenants(self, url, token):
+        """Collect enabled tenant IDs across every page of a collection.
+
+        :param str url: The first page of the tenant collection.
+        :param str token: The auth token for the authenticated user.
+        :returns: A set of enabled tenant IDs.
+        :rtype: set
+        :raises ValueError: If a page cannot be parsed or the collection does
+            not terminate within the supported number of pages.
+        """
+
+        enabled_tenants = set()
+        seen_urls = set()
+        next_url = url
+        for _page in range(TENANT_PAGE_LIMIT):
+            if next_url in seen_urls:
+                raise ValueError(f"tenant pagination repeated page: {next_url}")
+            seen_urls.add(next_url)
+
+            LOG.debug(_("Fetching tenants from: %s"), next_url)
+            r = self.session.get(
+                next_url,
+                timeout=REQUEST_TIMEOUT,
+                headers={"X-Auth-Token": token},
+            )
+            r.raise_for_status()
+            tenants_response = r.json()
+            LOG.debug(_("Tenants response: %s"), tenants_response)
+
+            tenants, next_url = self._tenants_page(tenants_response)
+            enabled_tenants.update(self._parse_enabled_tenants(tenants))
+            if not next_url:
+                return enabled_tenants
+
+        raise ValueError(
+            f"tenant pagination exceeded {TENANT_PAGE_LIMIT} pages"
+        )
 
     @staticmethod
     def _return_auth_url(ddi):
