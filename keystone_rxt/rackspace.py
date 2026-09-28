@@ -1918,15 +1918,29 @@ class RXTSAMLAuth(RXTv2BaseAuth):
         LOG.debug(_("Rackspace IDP SAML2 Login started"))
 
         try:
+            ddi = flask.request.environ["REMOTE_DDI"]
             (
                 access_projects,
                 access_roles,
                 roles_authoritative,
             ) = self._return_rxt_roles(
                 uid=flask.request.environ["uid"],
-                ddi=flask.request.environ["REMOTE_DDI"],
+                ddi=ddi,
                 token=flask.request.environ["REMOTE_AUTH_TOKEN"],
             )
+            if not keystone.conf.CONF.rackspace.role_attribute_enforcement:
+                access_projects = access_projects + [f"{ddi}_Flex"]
+
+            # Without projects the mapping receives an empty project name,
+            # which every affected user resolves to one shared project.
+            if len(access_projects) < 1:
+                raise exception.Unauthorized(
+                    _(
+                        "User does not have the required role"
+                        " attribute to continue."
+                    )
+                )
+
             flask.request.environ["REMOTE_PROJECTS"] = ";".join(
                 access_projects
             )
