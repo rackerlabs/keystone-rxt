@@ -75,11 +75,9 @@ def test_projected_projects_are_passed_to_the_mapping():
     assert environ[rxt.RXT_RECONCILE_ROLES_ENV] == "true"
 
 
-def test_ddi_fallback_applies_without_role_attribute_enforcement():
+def test_ddi_fallback_does_not_apply_to_federated_login():
     raised, handled, environ = run([], enforcement=False)
 
-    # Matches the password path, which falls back to the DDI project when
-    # role attribute enforcement is disabled.
-    assert raised is None
-    assert handled
-    assert environ["REMOTE_PROJECTS"] == f"{DDI}_Flex"
+    assert raised is not None
+    assert not handled
+    assert "REMOTE_PROJECTS" not in environ
