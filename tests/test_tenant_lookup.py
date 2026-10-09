@@ -7,6 +7,7 @@ read must never be reported as the user's complete tenant state.
 """
 
 import flask
+import keystone.conf
 import requests
 
 from conftest import rxt
@@ -19,6 +20,18 @@ BASE = "https://identity.api.rackspacecloud.com/v2.0/tenants"
 
 def flex(uuid, enabled=True):
     return {"id": f"os_flex:{uuid}", "enabled": enabled}
+
+
+def mrr(project, enabled=True):
+    return {"id": f"os_flex_mrr:{project}", "enabled": enabled}
+
+
+def ddi_flex(enabled=True):
+    return {
+        "id": "tenant-id-for-ddi-flex",
+        "name": f"{DDI}_Flex",
+        "enabled": enabled,
+    }
 
 
 class FakeResponse:
@@ -51,12 +64,16 @@ class FakeSession:
         return result
 
 
-def fetch(responses):
+def fetch(responses, allow_bare_ddi_flex=False):
     """Run the real lookup against queued responses."""
     auth = rxt.RXTv2BaseAuth()
     auth.session = FakeSession(responses)
     with flask.Flask("test").test_request_context("/"):
-        tenants = auth._fetch_enabled_tenants(ddi=DDI, token=TOKEN)
+        tenants = auth._fetch_enabled_tenants(
+            ddi=DDI,
+            token=TOKEN,
+            allow_bare_ddi_flex=allow_bare_ddi_flex,
+        )
     return tenants, auth.session.urls
 
 
@@ -80,6 +97,59 @@ def test_disabled_tenants_are_still_excluded():
     )
 
     assert tenants == {"on"}
+
+
+def test_mrr_tenants_are_normalized_and_kept():
+    keystone.conf.CONF.set_override(
+        "role_attribute", ["os_flex", "os_flex_mrr"], group="rackspace"
+    )
+    try:
+        tenants, _urls = fetch(
+            [FakeResponse({"tenants": [mrr("mrr-project")]})]
+        )
+    finally:
+        keystone.conf.CONF.clear_override(
+            "role_attribute", group="rackspace"
+        )
+
+    assert tenants == {"mrr-project"}
+    assert rxt.RXTv2BaseAuth._filter_projects_by_enabled_tenants(
+        ["mrr-project"], tenants
+    ) == ["mrr-project"]
+
+
+def test_ddi_flex_tenant_name_is_kept():
+    tenants, _urls = fetch(
+        [FakeResponse({"tenants": [ddi_flex()]})],
+        allow_bare_ddi_flex=True,
+    )
+
+    assert tenants == {"tenant-id-for-ddi-flex", f"{DDI}_Flex"}
+    assert rxt.RXTv2BaseAuth._filter_projects_by_enabled_tenants(
+        [f"{DDI}_Flex"], tenants
+    ) == [f"{DDI}_Flex"]
+
+
+def test_role_parser_accepts_supported_flex_tenant_forms():
+    keystone.conf.CONF.set_override(
+        "role_attribute", ["os_flex", "os_flex_mrr"], group="rackspace"
+    )
+    try:
+        projects, _roles = rxt.RXTv2BaseAuth._role_parser(
+            [
+                {"name": "identity:default", "tenantId": "os_flex:flex-project"},
+                {"name": "identity:default", "tenantId": "os_flex_mrr:mrr-project"},
+                {"name": "identity:default", "tenantId": f"{DDI}_Flex"},
+                {"name": "identity:default", "tenantId": "other-project"},
+            ],
+            allow_bare_ddi_flex=True,
+        )
+    finally:
+        keystone.conf.CONF.clear_override(
+            "role_attribute", group="rackspace"
+        )
+
+    assert projects == [f"{DDI}_Flex", "flex-project", "mrr-project"]
 
 
 def test_paginated_collection_is_fully_traversed():

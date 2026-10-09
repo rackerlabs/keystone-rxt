@@ -169,7 +169,7 @@ roles.
 
 | key               | value |
 | ----------------- | ----- |
-| `role_attribute` | A string option used as an anchor to discover roles attributed to a given user |
+| `role_attribute` | A comma-separated list of tenant prefixes used to discover roles attributed to a given user; defaults to `os_flex` |
 | `role_attribute_enforcement` | When set `true` will limit a users project to only the discovered GUID for the defined `role_attribute` |
 
 #### User enablement authority
