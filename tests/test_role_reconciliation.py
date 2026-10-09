@@ -257,6 +257,24 @@ def test_missing_ddi_flex_grant_is_recreated_from_projection():
         assert not assignment_api.deleted
 
 
+def test_missing_ddi_flex_project_is_not_created():
+    for handler in ADAPTERS:
+        assignment_api = FakeAssignmentAPI()
+        resource_api = FakeResourceAPI({})
+
+        _run(
+            handler,
+            [_shadow_project("123456_Flex")],
+            assignment_api,
+            resource_api,
+            "true",
+        )
+
+        assert not resource_api.projects
+        assert not assignment_api.granted
+        assert not assignment_api.deleted
+
+
 def test_incomplete_idp_response_never_revokes():
     for handler in ADAPTERS:
         projects = _existing_project("11111111", "proj-1")

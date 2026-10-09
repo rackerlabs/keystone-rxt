@@ -77,7 +77,7 @@ attribute as a prefix sourcing the `tenantId` from the `user` `roles` found
 within the Rackspace Identity API catalog.
 
 If an empty list is used, no IdP-derived projects are added. Direct
-authentication still includes the local DDI project.
+authentication still includes an existing local DDI project.
 """
     ),
     default=["os_flex"],
@@ -88,7 +88,7 @@ ROLE_ATTRIBUTE_ENFORCEMENT = keystone.conf.cfg.BoolOpt(
         """Retained for compatibility with existing configurations.
 
 Rackspace Identity projects are always limited to configured role attributes.
-Direct authentication also includes the user's local {DDI}_Flex project.
+Direct authentication also includes an existing local {DDI}_Flex project.
 """,
     ),
     default=False,
@@ -475,7 +475,8 @@ def _project_projects(
     this helper. Mapped projects are created or updated and the mapped roles
     are granted. When Rackspace Identity returned a complete view of the
     user's access, direct project-role grants that it no longer supplies are
-    revoked so Keystone matches the identity provider.
+    revoked so Keystone matches the identity provider. Missing local DDI Flex
+    projects are not created.
     """
     desired_grants = set()
     for shadow_project in shadow_projects:
@@ -487,6 +488,19 @@ def _project_projects(
                 shadow_project["name"], shadow_project["domain"]["id"]
             )
         except exception.ProjectNotFound:
+            project_name = shadow_project["name"]
+            if isinstance(project_name, str) and DDI_FLEX_PROJECT.match(
+                project_name
+            ):
+                LOG.debug(
+                    _(
+                        "Local DDI Flex project %s does not exist; skipping "
+                        "projection for user %s."
+                    ),
+                    project_name,
+                    user["id"],
+                )
+                continue
             LOG.info(
                 _(
                     "Project %s does not exist. It will be "

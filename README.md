@@ -170,7 +170,7 @@ roles.
 | key               | value |
 | ----------------- | ----- |
 | `role_attribute` | A comma-separated list of tenant prefixes used to discover roles attributed to a given user; defaults to `os_flex` |
-| `role_attribute_enforcement` | Retained for configuration compatibility. IdP projects are limited to configured `role_attribute` prefixes; direct authentication also includes the local `{DDI}_Flex` project. |
+| `role_attribute_enforcement` | Retained for configuration compatibility. IdP projects are limited to configured `role_attribute` prefixes; direct authentication also includes an existing local `{DDI}_Flex` project. |
 
 #### User enablement authority
 
