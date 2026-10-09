@@ -55,7 +55,6 @@ def return_roles(
     tenant_ids,
     enabled_tenants=None,
     ddi="123456",
-    allow_bare_ddi_flex=False,
 ):
     keystone.conf.CONF.set_override(
         "role_attribute", attributes, group="rackspace"
@@ -75,7 +74,6 @@ def return_roles(
                 uid=f"role-attribute-test-user-{cache_suffix}",
                 ddi=ddi,
                 token="token",
-                allow_bare_ddi_flex=allow_bare_ddi_flex,
             )
     finally:
         keystone.conf.CONF.clear_override(
@@ -117,11 +115,10 @@ def test_multiple_role_attributes_are_supported():
     assert authoritative is True
 
 
-def test_ddi_flex_project_names_are_supported():
+def test_ddi_flex_project_names_are_not_idp_role_attribute_projects():
     projects, _roles, authoritative = return_roles(
         ["os_flex", "os_flex_mrr"],
         ["123456_Flex", "654321_Flex", "not-a-ddi_Flex"],
-        allow_bare_ddi_flex=True,
         enabled_tenants=[
             {
                 "id": "tenant-id-for-ddi-flex",
@@ -138,15 +135,14 @@ def test_ddi_flex_project_names_are_supported():
         ],
     )
 
-    assert projects == ["123456_Flex", "654321_Flex"]
+    assert projects == []
     assert authoritative is True
 
 
-def test_direct_auth_can_return_prefixed_and_bare_ddi_flex_projects():
+def test_direct_auth_only_returns_configured_idp_role_attribute_projects():
     projects, _roles, authoritative = return_roles(
         ["os_flex", "os_flex_mrr"],
         ["os_flex:federated-one", "os_flex_mrr:federated-two", "123456_Flex"],
-        allow_bare_ddi_flex=True,
         enabled_tenants=[
             "os_flex:federated-one",
             "os_flex_mrr:federated-two",
@@ -157,7 +153,7 @@ def test_direct_auth_can_return_prefixed_and_bare_ddi_flex_projects():
         ],
     )
 
-    assert projects == ["123456_Flex", "federated-one", "federated-two"]
+    assert projects == ["federated-one", "federated-two"]
     assert authoritative is True
 
 
@@ -181,7 +177,7 @@ def test_ddi_flex_project_names_are_ignored_by_default():
     assert authoritative is True
 
 
-def test_direct_auth_fallback_does_not_double_suffix_ddi_flex_tenant():
+def test_direct_auth_does_not_project_ddi_flex_fallback_tenant():
     service_catalog = {
         "access": {
             "user": {
@@ -203,7 +199,7 @@ def test_direct_auth_fallback_does_not_double_suffix_ddi_flex_tenant():
         with flask.Flask("test").test_request_context("/"):
             auth = rxt.RXTv2Credentials({"user": {"name": "test-user"}})
             auth._return_rxt_roles = (
-                lambda uid, ddi, token, allow_bare_ddi_flex=False: (
+                lambda uid, ddi, token: (
                     ["federated-one", "federated-two"],
                     {"identity": "reader"},
                     True,
@@ -216,4 +212,4 @@ def test_direct_auth_fallback_does_not_double_suffix_ddi_flex_tenant():
             "role_attribute_enforcement", group="rackspace"
         )
 
-    assert environ["RXT_TenantID"] == "federated-one;federated-two;123456_Flex"
+    assert environ["RXT_TenantID"] == "federated-one;federated-two"

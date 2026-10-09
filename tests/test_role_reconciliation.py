@@ -161,7 +161,7 @@ def test_stale_role_on_retained_project_is_revoked():
         assert assignment_api.listed_user_ids == [USER["id"]]
 
 
-def test_grants_for_omitted_project_are_revoked():
+def test_grants_for_local_only_project_are_preserved():
     for handler in ADAPTERS:
         projects = _existing_project("11111111", "proj-1")
         assignment_api = FakeAssignmentAPI(
@@ -171,10 +171,10 @@ def test_grants_for_omitted_project_are_revoked():
                     "project_id": "proj-1",
                     "role_id": "role-member",
                 },
-                # Project absent from the authoritative IdP response.
+                # Local Keystone project absent from the IdP projection.
                 {
                     "user_id": USER["id"],
-                    "project_id": "proj-gone",
+                    "project_id": "123456_Flex",
                     "role_id": "role-member",
                 },
             ]
@@ -188,9 +188,7 @@ def test_grants_for_omitted_project_are_revoked():
             "true",
         )
 
-        assert assignment_api.deleted == [
-            ("role-member", USER["id"], "proj-gone")
-        ]
+        assert not assignment_api.deleted
 
 
 def test_incomplete_idp_response_never_revokes():

@@ -64,7 +64,7 @@ class FakeSession:
         return result
 
 
-def fetch(responses, allow_bare_ddi_flex=False):
+def fetch(responses):
     """Run the real lookup against queued responses."""
     auth = rxt.RXTv2BaseAuth()
     auth.session = FakeSession(responses)
@@ -72,7 +72,6 @@ def fetch(responses, allow_bare_ddi_flex=False):
         tenants = auth._fetch_enabled_tenants(
             ddi=DDI,
             token=TOKEN,
-            allow_bare_ddi_flex=allow_bare_ddi_flex,
         )
     return tenants, auth.session.urls
 
@@ -118,19 +117,16 @@ def test_mrr_tenants_are_normalized_and_kept():
     ) == ["mrr-project"]
 
 
-def test_ddi_flex_tenant_name_is_kept():
-    tenants, _urls = fetch(
-        [FakeResponse({"tenants": [ddi_flex()]})],
-        allow_bare_ddi_flex=True,
-    )
+def test_ddi_flex_tenant_name_is_not_normalized_from_idp_tenants():
+    tenants, _urls = fetch([FakeResponse({"tenants": [ddi_flex()]})])
 
-    assert tenants == {"tenant-id-for-ddi-flex", f"{DDI}_Flex"}
+    assert tenants == {"tenant-id-for-ddi-flex"}
     assert rxt.RXTv2BaseAuth._filter_projects_by_enabled_tenants(
         [f"{DDI}_Flex"], tenants
-    ) == [f"{DDI}_Flex"]
+    ) == []
 
 
-def test_role_parser_accepts_supported_flex_tenant_forms():
+def test_role_parser_accepts_configured_role_attribute_tenant_forms():
     keystone.conf.CONF.set_override(
         "role_attribute", ["os_flex", "os_flex_mrr"], group="rackspace"
     )
@@ -141,15 +137,14 @@ def test_role_parser_accepts_supported_flex_tenant_forms():
                 {"name": "identity:default", "tenantId": "os_flex_mrr:mrr-project"},
                 {"name": "identity:default", "tenantId": f"{DDI}_Flex"},
                 {"name": "identity:default", "tenantId": "other-project"},
-            ],
-            allow_bare_ddi_flex=True,
+            ]
         )
     finally:
         keystone.conf.CONF.clear_override(
             "role_attribute", group="rackspace"
         )
 
-    assert projects == [f"{DDI}_Flex", "flex-project", "mrr-project"]
+    assert projects == ["flex-project", "mrr-project"]
 
 
 def test_paginated_collection_is_fully_traversed():

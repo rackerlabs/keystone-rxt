@@ -61,7 +61,6 @@ REQUEST_TIMEOUT = 30
 # Upper bound on tenant collection pages. A collection that does not finish
 # within this many pages is treated as unreadable rather than partial.
 TENANT_PAGE_LIMIT = 50
-DDI_FLEX_PROJECT = re.compile(r"^[0-9]+_Flex$")
 # Request marker set only when Rackspace Identity returned a complete role and
 # tenant view. Stale project-role grants are revoked only when it is present,
 # so partial or failed IdP responses can never remove existing access.
@@ -69,15 +68,12 @@ RXT_RECONCILE_ROLES_ENV = "RXT_ReconcileRoles"
 ROLE_ATTRIBUTE = keystone.conf.cfg.ListOpt(
     "role_attribute",
     help=keystone.conf.utils.fmt(
-        """The attributes to use for roles granting account access.
+        """The tenant prefixes used by Rackspace Identity role assignments.
 
-Each attribute can be any role within the Rackspace Identity API. Specify
-multiple attributes as a comma-separated list. The system will process each
-attribute as a prefix sourcing the `tenantId` from the `user` `roles` found
-within the Rackspace Identity API catalog.
-
-If an empty list is used, the system will disable this mechanism and
-fall back to using the DDI.
+Each attribute should match the prefix before the colon in a Flex tenant
+reference, for example os_flex or os_flex_mrr. Specify multiple attributes as
+a comma-separated list. Local Keystone projects such as {DDI}_Flex are not
+read from Rackspace Identity role attributes.
 """
     ),
     default=["os_flex"],
@@ -85,9 +81,11 @@ fall back to using the DDI.
 ROLE_ATTRIBUTE_ENFORCEMENT = keystone.conf.cfg.BoolOpt(
     "role_attribute_enforcement",
     help=keystone.conf.utils.fmt(
-        """Enables or disables the enforcement of role attributes.
+        """Deprecated compatibility option for role attribute enforcement.
 
-If disabled and no role is found, the plugin will fall back to using the DDI.
+Rackspace Identity role attributes are always limited to configured
+role_attribute prefixes. Local Keystone project visibility comes from Keystone
+role assignments instead of a DDI fallback.
 """,
     ),
     default=False,
@@ -564,7 +562,7 @@ def _project_projects(
     _revoke_stale_project_grants(desired_grants, user, assignment_api)
 
 
-def _list_direct_project_grants(user, assignment_api):
+def _list_direct_project_grants(user, assignment_api, project_ids=None):
     """Return the user's own non-inherited project-role grants.
 
     Rackspace Identity only projects direct project-role grants, so every
@@ -578,12 +576,15 @@ def _list_direct_project_grants(user, assignment_api):
     this call does not request, so dropping the check would let a later
     switch to ``effective=True`` silently revoke group-derived access.
     """
+    project_ids = set(project_ids or [])
     direct_grants = set()
     for assignment in assignment_api.list_role_assignments(
         user_id=user["id"]
     ):
         project_id = assignment.get("project_id")
         if not project_id or assignment.get("indirect"):
+            continue
+        if project_ids and project_id not in project_ids:
             continue
         if assignment.get("inherited_to_projects"):
             continue
@@ -626,7 +627,12 @@ def _revoke_stale_project_grants(desired_grants, user, assignment_api):
         )
         return
 
-    stale_grants = _list_direct_project_grants(user, assignment_api)
+    projected_project_ids = {
+        project_id for project_id, _role_id in desired_grants
+    }
+    stale_grants = _list_direct_project_grants(
+        user, assignment_api, project_ids=projected_project_ids
+    )
     stale_grants -= desired_grants
     if not stale_grants:
         # The common case on every login. Logged at debug so the info level
@@ -885,7 +891,7 @@ class RXTv2BaseAuth(object):
         return session
 
     @staticmethod
-    def _normalize_flex_tenant(value, allow_bare_ddi_flex=False):
+    def _normalize_flex_tenant(value):
         """Normalize a Rackspace Flex tenant reference to a project name."""
 
         if not isinstance(value, str) or not value:
@@ -896,19 +902,10 @@ class RXTv2BaseAuth(object):
                 project = value.split(":", 1)[1]
                 return project or None
 
-        if allow_bare_ddi_flex and DDI_FLEX_PROJECT.match(value):
-            return value
-
         return None
 
     @staticmethod
-    def _ddi_flex_project(ddi):
-        if DDI_FLEX_PROJECT.match(ddi):
-            return ddi
-        return f"{ddi}_Flex"
-
-    @staticmethod
-    def _role_parser(role_list, allow_bare_ddi_flex=False):
+    def _role_parser(role_list):
         """Parse the role list and return access roles and projects.
 
         This method will parse the role list and return a tuple containing
@@ -969,8 +966,7 @@ class RXTv2BaseAuth(object):
         for role in role_list:
             project_tenant = role.get("tenantId")
             project_value = RXTv2BaseAuth._normalize_flex_tenant(
-                project_tenant,
-                allow_bare_ddi_flex=allow_bare_ddi_flex,
+                project_tenant
             )
             if not project_value:
                 continue
@@ -1019,18 +1015,17 @@ class RXTv2BaseAuth(object):
         return values, next_url
 
     @staticmethod
-    def _parse_enabled_tenants(tenants, allow_bare_ddi_flex=False):
+    def _parse_enabled_tenants(tenants):
         """Return the enabled tenant IDs from tenant records.
 
         Tenants that are disabled, or missing from the collection entirely,
         are not included.
 
-        Flex tenant IDs in the response can use the format
-        "os_flex:<project>" or "os_flex_mrr:<project>", while role-derived
-        access_projects contain bare project names. Some tenant responses also
-        expose the project as the tenant name, for example "123456_Flex".
-        This method normalizes all supported Flex forms to the project name
-        used by the mapping.
+        Flex tenant IDs in the response can use configured role-attribute
+        forms such as "os_flex:<project>" or "os_flex_mrr:<project>", while
+        role-derived access_projects contain bare project names. This method
+        normalizes those supported Flex forms to the project name used by the
+        mapping.
 
         :param list tenants: Tenant records from GET /v2.0/tenants.
         :returns: A set of enabled tenant IDs or normalized Flex project names.
@@ -1043,17 +1038,10 @@ class RXTv2BaseAuth(object):
                 continue
             tenant_id = tenant["id"]
             enabled_tenants.add(
-                RXTv2BaseAuth._normalize_flex_tenant(
-                    tenant_id,
-                    allow_bare_ddi_flex=allow_bare_ddi_flex,
-                )
-                or tenant_id
+                RXTv2BaseAuth._normalize_flex_tenant(tenant_id) or tenant_id
             )
             tenant_name = tenant.get("name")
-            tenant_project = RXTv2BaseAuth._normalize_flex_tenant(
-                tenant_name,
-                allow_bare_ddi_flex=allow_bare_ddi_flex,
-            )
+            tenant_project = RXTv2BaseAuth._normalize_flex_tenant(tenant_name)
             if tenant_project:
                 enabled_tenants.add(tenant_project)
         return enabled_tenants
@@ -1081,9 +1069,7 @@ class RXTv2BaseAuth(object):
             )
         return filtered
 
-    def _fetch_enabled_tenants(
-        self, ddi, token, allow_bare_ddi_flex=False
-    ):
+    def _fetch_enabled_tenants(self, ddi, token):
         """Fetch the complete list of enabled tenants from the IdP.
 
         Calls GET /v2.0/tenants using the authenticated user's token and
@@ -1112,7 +1098,6 @@ class RXTv2BaseAuth(object):
             return self._collect_enabled_tenants(
                 tenants_url,
                 token,
-                allow_bare_ddi_flex=allow_bare_ddi_flex,
             )
         except requests.Timeout:
             LOG.warning(_("Timeout fetching tenants list"))
@@ -1130,9 +1115,7 @@ class RXTv2BaseAuth(object):
             LOG.warning(_("Error parsing tenants response: %s"), e)
             return None
 
-    def _collect_enabled_tenants(
-        self, url, token, allow_bare_ddi_flex=False
-    ):
+    def _collect_enabled_tenants(self, url, token):
         """Collect enabled tenant IDs across every page of a collection.
 
         :param str url: The first page of the tenant collection.
@@ -1162,12 +1145,7 @@ class RXTv2BaseAuth(object):
             LOG.debug(_("Tenants response: %s"), tenants_response)
 
             tenants, next_url = self._tenants_page(tenants_response)
-            enabled_tenants.update(
-                self._parse_enabled_tenants(
-                    tenants,
-                    allow_bare_ddi_flex=allow_bare_ddi_flex,
-                )
-            )
+            enabled_tenants.update(self._parse_enabled_tenants(tenants))
             if not next_url:
                 return enabled_tenants
 
@@ -1279,9 +1257,7 @@ class RXTv2BaseAuth(object):
             response_data=response_data,
         )
 
-    def _return_rxt_roles(
-        self, uid, ddi, token, allow_bare_ddi_flex=False
-    ):
+    def _return_rxt_roles(self, uid, ddi, token):
         """Authenticate using the Rackspace Identity API.
 
         This method is used to query the Rackspace role assigment API.
@@ -1333,16 +1309,12 @@ class RXTv2BaseAuth(object):
         """
 
         # The cache key is versioned because the cached value carries the
-        # completeness flag and depends on the configured role attributes and
-        # whether bare DDI Flex project names are allowed.
+        # completeness flag and depends on the configured role attributes.
         role_attributes = ",".join(
             keystone.conf.CONF.rackspace.role_attribute
         )
-        bare_ddi_flex = "1" if allow_bare_ddi_flex else "0"
         role_cache_key = hashlib.shake_256(
-            f"v4-{uid}-{ddi}-{role_attributes}-{bare_ddi_flex}".encode(
-                "utf-8"
-            )
+            f"v5-{uid}-{ddi}-{role_attributes}".encode("utf-8")
         ).hexdigest(length=16)
         cached_roles = RXT_ROLE_CACHE.get(role_cache_key)
         if cached_roles:
@@ -1374,10 +1346,7 @@ class RXTv2BaseAuth(object):
             ]:
                 for source in assignment["sources"]:
                     for tenant in source.get("forTenants", list()):
-                        if self._normalize_flex_tenant(
-                            tenant,
-                            allow_bare_ddi_flex=allow_bare_ddi_flex,
-                        ):
+                        if self._normalize_flex_tenant(tenant):
                             role_list.append(
                                 dict(
                                     name=assignment["onRoleName"],
@@ -1416,8 +1385,7 @@ class RXTv2BaseAuth(object):
             raise exception.Unauthorized(_("Invalid role assignment format"))
         else:
             access_projects, access_roles = self._role_parser(
-                role_list=role_list,
-                allow_bare_ddi_flex=allow_bare_ddi_flex,
+                role_list=role_list
             )
             LOG.debug(
                 _("Parsed Role Assignments (before tenant filter): projects=%s, roles=%s"),
@@ -1429,7 +1397,6 @@ class RXTv2BaseAuth(object):
             enabled_tenants = self._fetch_enabled_tenants(
                 ddi=ddi,
                 token=token,
-                allow_bare_ddi_flex=allow_bare_ddi_flex,
             )
             # The role and tenant lookups both succeeded, so the projected
             # access represents the user's complete Rackspace Identity state
@@ -1640,12 +1607,7 @@ class RXTv2Credentials(RXTv2BaseAuth):
                 uid=access_user["id"],
                 ddi=access_tenant_id,
                 token=access_token["id"],
-                allow_bare_ddi_flex=True,
             )
-            if not keystone.conf.CONF.rackspace.role_attribute_enforcement:
-                access_projects.append(
-                    self._ddi_flex_project(access_tenant_id)
-                )
 
             if len(access_projects) < 1:
                 raise exception.Unauthorized(
