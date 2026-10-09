@@ -54,6 +54,12 @@ class FakeResourceAPI:
             raise exception.ProjectNotFound(name)
         return self.projects[key]
 
+    def get_project(self, project_id):
+        for project in self.projects.values():
+            if project and project["id"] == project_id:
+                return project
+        raise exception.ProjectNotFound(project_id)
+
     def create_project(self, project_id, project_ref):
         ref = {
             "id": project_id,
@@ -191,6 +197,64 @@ def test_grants_for_omitted_project_are_revoked():
         assert assignment_api.deleted == [
             ("role-member", USER["id"], "proj-gone")
         ]
+
+
+def test_ddi_flex_grants_are_preserved_while_other_stale_grants_are_revoked():
+    for handler in ADAPTERS:
+        projects = {}
+        projects.update(_existing_project("11111111", "proj-1"))
+        projects.update(_existing_project("123456_Flex", "proj-ddi"))
+        projects.update(_existing_project("22222222", "proj-gone"))
+        assignment_api = FakeAssignmentAPI(
+            [
+                {
+                    "user_id": USER["id"],
+                    "project_id": "proj-1",
+                    "role_id": "role-member",
+                },
+                {
+                    "user_id": USER["id"],
+                    "project_id": "proj-ddi",
+                    "role_id": "role-member",
+                },
+                {
+                    "user_id": USER["id"],
+                    "project_id": "proj-gone",
+                    "role_id": "role-member",
+                },
+            ]
+        )
+
+        _run(
+            handler,
+            [_shadow_project("11111111")],
+            assignment_api,
+            FakeResourceAPI(projects),
+            "true",
+        )
+
+        assert assignment_api.deleted == [
+            ("role-member", USER["id"], "proj-gone")
+        ]
+
+
+def test_missing_ddi_flex_grant_is_recreated_from_projection():
+    for handler in ADAPTERS:
+        projects = _existing_project("123456_Flex", "proj-ddi")
+        assignment_api = FakeAssignmentAPI()
+
+        _run(
+            handler,
+            [_shadow_project("123456_Flex")],
+            assignment_api,
+            FakeResourceAPI(projects),
+            "true",
+        )
+
+        assert assignment_api.granted == [
+            ("role-member", USER["id"], "proj-ddi")
+        ]
+        assert not assignment_api.deleted
 
 
 def test_incomplete_idp_response_never_revokes():
