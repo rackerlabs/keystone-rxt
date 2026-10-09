@@ -197,7 +197,7 @@ def test_direct_auth_fallback_does_not_double_suffix_ddi_flex_tenant():
         }
     }
     keystone.conf.CONF.set_override(
-        "role_attribute_enforcement", False, group="rackspace"
+        "role_attribute_enforcement", True, group="rackspace"
     )
     try:
         with flask.Flask("test").test_request_context("/"):
@@ -217,3 +217,36 @@ def test_direct_auth_fallback_does_not_double_suffix_ddi_flex_tenant():
         )
 
     assert environ["RXT_TenantID"] == "federated-one;federated-two;123456_Flex"
+
+
+def test_direct_auth_projects_ddi_flex_with_enforcement_enabled():
+    service_catalog = {
+        "access": {
+            "user": {
+                "id": "test-user-id",
+                "name": "test-user",
+                "email": "test@example.com",
+                "RAX-AUTH:domainId": "domain-id",
+            },
+            "token": {"id": "token", "tenant": {"id": "123456"}},
+        }
+    }
+    keystone.conf.CONF.set_override(
+        "role_attribute_enforcement", True, group="rackspace"
+    )
+    try:
+        with flask.Flask("test").test_request_context("/"):
+            auth = rxt.RXTv2Credentials({"user": {"name": "test-user"}})
+            auth._return_rxt_roles = lambda uid, ddi, token: (
+                [],
+                {"identity": "reader"},
+                True,
+            )
+            auth._parse_service_catalog(service_catalog)
+            environ = dict(flask.request.environ)
+    finally:
+        keystone.conf.CONF.clear_override(
+            "role_attribute_enforcement", group="rackspace"
+        )
+
+    assert environ["RXT_TenantID"] == "123456_Flex"

@@ -76,8 +76,8 @@ multiple attributes as a comma-separated list. The system will process each
 attribute as a prefix sourcing the `tenantId` from the `user` `roles` found
 within the Rackspace Identity API catalog.
 
-If an empty list is used, the system will disable this mechanism and
-fall back to using the DDI.
+If an empty list is used, no IdP-derived projects are added. Direct
+authentication still includes the local DDI project.
 """
     ),
     default=["os_flex"],
@@ -85,9 +85,10 @@ fall back to using the DDI.
 ROLE_ATTRIBUTE_ENFORCEMENT = keystone.conf.cfg.BoolOpt(
     "role_attribute_enforcement",
     help=keystone.conf.utils.fmt(
-        """Enables or disables the enforcement of role attributes.
+        """Retained for compatibility with existing configurations.
 
-If disabled and no role is found, the plugin will fall back to using the DDI.
+Rackspace Identity projects are always limited to configured role attributes.
+Direct authentication also includes the user's local {DDI}_Flex project.
 """,
     ),
     default=False,
@@ -561,7 +562,9 @@ def _project_projects(
                 project_id=project["id"], project=project
             )
 
-    _revoke_stale_project_grants(desired_grants, user, assignment_api)
+    _revoke_stale_project_grants(
+        desired_grants, user, assignment_api, resource_api
+    )
 
 
 def _list_direct_project_grants(user, assignment_api):
@@ -594,7 +597,9 @@ def _list_direct_project_grants(user, assignment_api):
     return direct_grants
 
 
-def _revoke_stale_project_grants(desired_grants, user, assignment_api):
+def _revoke_stale_project_grants(
+    desired_grants, user, assignment_api, resource_api
+):
     """Revoke direct project grants the identity provider no longer supplies.
 
     Revocation is skipped unless the authentication path recorded a complete
@@ -628,6 +633,34 @@ def _revoke_stale_project_grants(desired_grants, user, assignment_api):
 
     stale_grants = _list_direct_project_grants(user, assignment_api)
     stale_grants -= desired_grants
+
+    protected_project_ids = set()
+    for project_id in {grant[0] for grant in stale_grants}:
+        try:
+            project = resource_api.get_project(project_id)
+        except exception.ProjectNotFound:
+            continue
+        project_name = project.get("name")
+        if isinstance(project_name, str) and DDI_FLEX_PROJECT.match(
+            project_name
+        ):
+            protected_project_ids.add(project_id)
+
+    if protected_project_ids:
+        stale_grants = {
+            grant
+            for grant in stale_grants
+            if grant[0] not in protected_project_ids
+        }
+        LOG.info(
+            _(
+                "Preserved direct grants for user %s on %s local DDI Flex "
+                "projects during role reconciliation."
+            ),
+            user["id"],
+            len(protected_project_ids),
+        )
+
     if not stale_grants:
         # The common case on every login. Logged at debug so the info level
         # records only reconciliations that changed or withheld access.
@@ -1640,12 +1673,10 @@ class RXTv2Credentials(RXTv2BaseAuth):
                 uid=access_user["id"],
                 ddi=access_tenant_id,
                 token=access_token["id"],
-                allow_bare_ddi_flex=True,
             )
-            if not keystone.conf.CONF.rackspace.role_attribute_enforcement:
-                access_projects.append(
-                    self._ddi_flex_project(access_tenant_id)
-                )
+            ddi_flex_project = self._ddi_flex_project(access_tenant_id)
+            if ddi_flex_project not in access_projects:
+                access_projects.append(ddi_flex_project)
 
             if len(access_projects) < 1:
                 raise exception.Unauthorized(
