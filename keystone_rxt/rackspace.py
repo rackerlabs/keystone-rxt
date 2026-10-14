@@ -990,17 +990,11 @@ class RXTv2BaseAuth(object):
                 role_name = role.get("name", "")
                 try:
                     rxt_role, rxt_value = role_name.split(":", 1)
-                except ValueError as e:
+                except ValueError:
                     LOG.debug(
-                        _(
-                            "Could not parse the role name and value, skipping: %s - %s"
-                        ),
+                        _("Could not parse the role name and value, skipping: %s"),
                         role,
-                        e,
                     )
-                    continue
-                except AttributeError as e:
-                    LOG.debug(_("Access role is undefined: %s - %s"), role, e)
                     continue
                 else:
                     rxt_role_mapping = RXT_ROLES.get(rxt_role, dict())
@@ -1692,6 +1686,12 @@ class RXTv2Credentials(RXTv2BaseAuth):
             if ddi_flex_project not in access_projects:
                 access_projects.append(ddi_flex_project)
 
+            # Drop blank tenant names so they do not map to an empty project
+            # name, which the attribute-mapping schema rejects.
+            access_projects = [
+                p for p in access_projects if p and p.strip()
+            ]
+
             if len(access_projects) < 1:
                 raise exception.Unauthorized(
                     _(
@@ -2043,6 +2043,19 @@ class RXTSAMLAuth(RXTv2BaseAuth):
             )
             # Without projects the mapping receives an empty project name,
             # which every affected user resolves to one shared project.
+            if len(access_projects) < 1:
+                raise exception.Unauthorized(
+                    _(
+                        "User does not have the required role"
+                        " attribute to continue."
+                    )
+                )
+
+            # Drop blank tenant names so they do not map to an empty project
+            # name, which the attribute-mapping schema rejects.
+            access_projects = [
+                p for p in access_projects if p and p.strip()
+            ]
             if len(access_projects) < 1:
                 raise exception.Unauthorized(
                     _(

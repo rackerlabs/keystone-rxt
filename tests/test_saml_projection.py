@@ -75,6 +75,26 @@ def test_projected_projects_are_passed_to_the_mapping():
     assert environ[rxt.RXT_RECONCILE_ROLES_ENV] == "true"
 
 
+def test_blank_project_names_are_dropped():
+    # A single blank entry must not project an empty project name; the
+    # remaining projects are still passed through.
+    raised, handled, environ = run(["", "11111111"], enforcement=True)
+
+    assert raised is None
+    assert handled == [{"status": True, "reenable_user": True}]
+    assert environ["REMOTE_PROJECTS"] == "11111111"
+
+
+def test_only_blank_project_names_denies_login():
+    # If every projected name is blank the login must be denied rather than
+    # projecting an empty project name.
+    raised, handled, environ = run(["", "  "], enforcement=True)
+
+    assert raised is not None
+    assert not handled
+    assert "REMOTE_PROJECTS" not in environ
+
+
 def test_ddi_fallback_does_not_apply_to_federated_login():
     raised, handled, environ = run([], enforcement=False)
 
