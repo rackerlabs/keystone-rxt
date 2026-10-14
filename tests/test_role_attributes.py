@@ -250,3 +250,39 @@ def test_direct_auth_projects_ddi_flex_with_enforcement_enabled():
         )
 
     assert environ["RXT_TenantID"] == "123456_Flex"
+
+
+def test_password_auth_drops_blank_project_names():
+    # A blank tenant name must not project an empty project name; the
+    # remaining projects (plus the DDI Flex fallback) are still passed.
+    service_catalog = {
+        "access": {
+            "user": {
+                "id": "test-user-id",
+                "name": "test-user",
+                "email": "test@example.com",
+                "RAX-AUTH:domainId": "domain-id",
+            },
+            "token": {"id": "token", "tenant": {"id": "123456"}},
+        }
+    }
+    keystone.conf.CONF.set_override(
+        "role_attribute_enforcement", True, group="rackspace"
+    )
+    try:
+        with flask.Flask("test").test_request_context("/"):
+            auth = rxt.RXTv2Credentials({"user": {"name": "test-user"}})
+            auth._return_rxt_roles = lambda uid, ddi, token: (
+                ["", "federated-one"],
+                {"identity": "reader"},
+                True,
+            )
+            auth._parse_service_catalog(service_catalog)
+            environ = dict(flask.request.environ)
+    finally:
+        keystone.conf.CONF.clear_override(
+            "role_attribute_enforcement", group="rackspace"
+        )
+
+    # The blank name is dropped; the DDI Flex fallback is appended.
+    assert environ["RXT_TenantID"] == "federated-one;123456_Flex"
