@@ -110,6 +110,25 @@ python3 -m venv .venv
 .venv/bin/python -m pytest tests/ -v
 ```
 
+### Authentication diagnostics
+
+Rackspace Identity password authentication records sanitized correlation
+metadata without logging credentials, tokens, session IDs, response bodies,
+or request headers. The plugin uses Keystone's existing oslo request context,
+so every diagnostic record carries the same Keystone `req-...` ID as the
+surrounding API request.
+
+Cache misses and upstream responses are logged at INFO. Failed upstream
+responses and network failures are logged at WARNING. Cache hits are logged at
+DEBUG to avoid producing one INFO record for every token request. An upstream
+response record includes only the authentication type, HTTP status, sanitized
+Rackspace transaction/request ID, and elapsed milliseconds. This provides the
+following correlation chain:
+
+```text
+Keystone req-id -> RXT cache/request logs -> Rackspace upstream request-id
+```
+
 ----
 
 ## Deploying the `keystone-rxt` plugin.

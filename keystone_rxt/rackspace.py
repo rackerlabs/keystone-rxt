@@ -18,6 +18,7 @@ import re
 import hashlib
 import inspect
 import json
+import time
 
 import urllib.parse as urlparse
 
@@ -58,6 +59,12 @@ RACKSPACE_US_IDENTITY_URL = "https://identity.api.rackspacecloud.com"
 RACKSPACE_UK_IDENTITY_URL = "https://lon.identity.api.rackspacecloud.com"
 UK_DDI_PREFIX = "100"
 REQUEST_TIMEOUT = 30
+UPSTREAM_REQUEST_ID_HEADERS = (
+    "X-Trans-Id",
+    "X-Openstack-Request-Id",
+    "X-Request-Id",
+    "Request-Id",
+)
 # Upper bound on tenant collection pages. A collection that does not finish
 # within this many pages is treated as unreadable rather than partial.
 TENANT_PAGE_LIMIT = 50
@@ -223,6 +230,24 @@ RXT_ROLES = {
     },
 }
 SESSION_ID_REGEX = re.compile(r"""sessionId='(.*?[^\\])'""")
+
+
+def _safe_log_value(value, max_length=255):
+    """Return a bounded, single-line value suitable for structured logs."""
+
+    if not value:
+        return "-"
+    return re.sub(r"[^A-Za-z0-9._:/-]", "_", str(value))[:max_length]
+
+
+def _upstream_request_id(response):
+    """Return a sanitized correlation ID supplied by Rackspace Identity."""
+
+    for header in UPSTREAM_REQUEST_ID_HEADERS:
+        value = response.headers.get(header)
+        if value:
+            return _safe_log_value(value)
+    return "-"
 
 
 class SecretFilter(formatters.ContextFormatter):
@@ -1756,7 +1781,13 @@ class RXTv2Credentials(RXTv2BaseAuth):
             else:
                 token_expire = parser.parse(expires)
                 if token_expire > datetime.now(token_expire.tzinfo):
-                    LOG.debug(_("Using cached Rackspace service catalog"))
+                    LOG.debug(
+                        _(
+                            "Rackspace Identity authentication cache hit "
+                            "auth_type=%s"
+                        ),
+                        auth_type,
+                    )
                     self._parse_service_catalog(
                         service_catalog=service_catalog
                     )
@@ -1770,17 +1801,65 @@ class RXTv2Credentials(RXTv2BaseAuth):
                     RXT_SERVICE_CACHE.delete(self.hashed_auth_payload)
 
         if auth_type == "passwordCredentials" and self.session_id:
-            LOG.debug(_("Found cached Rackspace session header for MFA."))
+            LOG.debug(
+                _(
+                    "Rackspace Identity authentication cache hit "
+                    "auth_type=%s cache=session"
+                ),
+                auth_type,
+            )
             return self._return_auth_handler(status=False)
 
-        LOG.debug(_("Attempting to authenticate using %s"), auth_type)
-        r = self.session.post(
-            urlparse.urljoin(RACKSPACE_US_IDENTITY_URL, "v2.0/tokens"),
-            timeout=REQUEST_TIMEOUT,
-            json=auth_data,
-            headers=self.rxt_headers,
+        LOG.info(
+            _(
+                "Rackspace Identity authentication request started "
+                "auth_type=%s cache=miss"
+            ),
+            auth_type,
         )
-        if r.status_code == 401 and "WWW-Authenticate" in r.headers:
+        started_at = time.monotonic()
+        try:
+            r = self.session.post(
+                urlparse.urljoin(RACKSPACE_US_IDENTITY_URL, "v2.0/tokens"),
+                timeout=REQUEST_TIMEOUT,
+                json=auth_data,
+                headers=self.rxt_headers,
+            )
+        except requests.RequestException as exc:
+            elapsed_ms = round((time.monotonic() - started_at) * 1000)
+            LOG.warning(
+                _(
+                    "Rackspace Identity authentication request failed "
+                    "auth_type=%s exception=%s elapsed_ms=%d"
+                ),
+                auth_type,
+                exc.__class__.__name__,
+                elapsed_ms,
+            )
+            raise
+
+        elapsed_ms = round((time.monotonic() - started_at) * 1000)
+        upstream_request_id = _upstream_request_id(r)
+        is_mfa_challenge = (
+            r.status_code == 401 and "WWW-Authenticate" in r.headers
+        )
+        response_logger = (
+            LOG.info
+            if r.status_code < 400 or is_mfa_challenge
+            else LOG.warning
+        )
+        response_logger(
+            _(
+                "Rackspace Identity authentication response "
+                "auth_type=%s status=%d upstream_request_id=%s "
+                "elapsed_ms=%d"
+            ),
+            auth_type,
+            r.status_code,
+            upstream_request_id,
+            elapsed_ms,
+        )
+        if is_mfa_challenge:
             LOG.debug(_("Caching Rackspace session header"))
             self._set_session_id(session_header=r.headers["WWW-Authenticate"])
             return self._return_auth_handler(status=False)
