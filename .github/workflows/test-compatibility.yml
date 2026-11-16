@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - 'stable/**'
 
 permissions:
   contents: read
@@ -20,7 +21,7 @@ jobs:
           - release: "2024.1"
             ref: unmaintained/2024.1
           - release: "2025.1"
-            ref: stable/2025.1
+            ref: unmaintained/2025.1
           - release: "2025.2"
             ref: stable/2025.2
           - release: "2026.1"
